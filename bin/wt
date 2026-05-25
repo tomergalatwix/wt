@@ -1,0 +1,718 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+WT_POOL_SIZE="${WT_POOL_SIZE:-5}"
+WT_FREE_PREFIX="${WT_FREE_PREFIX:-free-}"
+
+die() {
+  echo "Error: $*" >&2
+  exit 1
+}
+
+info() {
+  echo "$*"
+}
+
+repo_root() {
+  local common_dir
+  common_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || die "Run this command from inside a git repository."
+
+  if [[ "$(basename "$common_dir")" == ".git" ]]; then
+    dirname "$common_dir"
+  else
+    git rev-parse --show-toplevel 2>/dev/null || die "Run this command from inside a git repository."
+  fi
+}
+
+default_base_ref() {
+  local repo="$1"
+  if git -C "$repo" show-ref --verify --quiet refs/heads/master; then
+    echo "master"
+  elif git -C "$repo" show-ref --verify --quiet refs/remotes/origin/master; then
+    echo "origin/master"
+  elif git -C "$repo" show-ref --verify --quiet refs/heads/main; then
+    echo "main"
+  elif git -C "$repo" show-ref --verify --quiet refs/remotes/origin/main; then
+    echo "origin/main"
+  else
+    echo "HEAD"
+  fi
+}
+
+fresh_master_ref() {
+  local repo="$1"
+
+  if git -C "$repo" remote get-url origin >/dev/null 2>&1; then
+    if git -C "$repo" fetch --prune origin master >/dev/null 2>&1 &&
+      git -C "$repo" show-ref --verify --quiet refs/remotes/origin/master; then
+      echo "origin/master"
+      return 0
+    fi
+  fi
+
+  if git -C "$repo" show-ref --verify --quiet refs/heads/master; then
+    echo "master"
+    return 0
+  fi
+
+  die "Could not refresh origin/master and local master does not exist."
+}
+
+pool_dir() {
+  local repo="$1"
+  if [[ -n "${WT_POOL_DIR:-}" ]]; then
+    echo "$WT_POOL_DIR"
+  else
+    echo "$repo/.claude/worktrees"
+  fi
+}
+
+is_detached() {
+  local wt="$1"
+  ! git -C "$wt" symbolic-ref --quiet HEAD >/dev/null 2>&1
+}
+
+is_clean() {
+  local wt="$1"
+  [[ -z "$(git -C "$wt" status --porcelain)" ]]
+}
+
+branch_name() {
+  local wt="$1"
+  git -C "$wt" symbolic-ref --quiet --short HEAD 2>/dev/null || echo "(detached HEAD)"
+}
+
+stat_mtime() {
+  local path="$1"
+  if stat -f %m "$path" >/dev/null 2>&1; then
+    stat -f %m "$path"
+  else
+    stat -c %Y "$path"
+  fi
+}
+
+format_mtime() {
+  local epoch="$1"
+  if date -r "$epoch" "+%Y-%m-%d %H:%M" >/dev/null 2>&1; then
+    date -r "$epoch" "+%Y-%m-%d %H:%M"
+  else
+    date -d "@$epoch" "+%Y-%m-%d %H:%M"
+  fi
+}
+
+wt_name() {
+  local repo="$1"
+  local wt="$2"
+  if [[ "$wt" == "$repo" ]]; then
+    echo "main"
+  else
+    basename "$wt"
+  fi
+}
+
+relative_from_epoch() {
+  local epoch="$1"
+  local now diff value unit
+  now="$(date +%s)"
+  diff=$((now - epoch))
+  ((diff < 0)) && diff=0
+
+  if ((diff < 10)); then
+    echo "just now"
+    return 0
+  elif ((diff < 60)); then
+    value=$diff
+    unit="sec"
+  elif ((diff < 3600)); then
+    value=$((diff / 60))
+    unit="min"
+  elif ((diff < 86400)); then
+    value=$((diff / 3600))
+    unit="hour"
+  elif ((diff < 604800)); then
+    value=$((diff / 86400))
+    unit="day"
+  elif ((diff < 2592000)); then
+    value=$((diff / 604800))
+    unit="week"
+  elif ((diff < 31536000)); then
+    value=$((diff / 2592000))
+    unit="month"
+  else
+    value=$((diff / 31536000))
+    unit="year"
+  fi
+
+  if ((value == 1)); then
+    echo "1 $unit ago"
+  else
+    echo "$value ${unit}s ago"
+  fi
+}
+
+ensure_yarn() {
+  command -v yarn >/dev/null 2>&1 || die "yarn is required but not found in PATH."
+}
+
+fzf_command() {
+  local fzf_cmd="${WT_FZF_COMMAND:-fzf}"
+  command -v "$fzf_cmd" >/dev/null 2>&1 || die "fzf is required for interactive wt. Install with: brew install fzf"
+  echo "$fzf_cmd"
+}
+
+all_pool_worktrees() {
+  local pool="$1"
+  [[ -d "$pool" ]] || return 0
+  find "$pool" -maxdepth 1 -mindepth 1 -type d | while IFS= read -r d; do
+    if git -C "$d" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      printf '%s\n' "$d"
+    fi
+  done | sort
+}
+
+is_free_slot_path() {
+  local path="$1"
+  [[ "$(basename "$path")" =~ ^${WT_FREE_PREFIX}[0-9]+$ ]]
+}
+
+next_free_slot_path() {
+  local pool="$1"
+  local n=1
+  while :; do
+    local candidate="$pool/${WT_FREE_PREFIX}${n}"
+    [[ ! -e "$candidate" ]] && { printf '%s\n' "$candidate"; return 0; }
+    n=$((n + 1))
+  done
+}
+
+pick_idle_free_slot() {
+  local pool="$1"
+  local candidates=()
+  local wt
+  while IFS= read -r wt; do
+    [[ -n "$wt" ]] || continue
+    is_free_slot_path "$wt" || continue
+    if is_detached "$wt" && is_clean "$wt"; then
+      local num
+      num="$(basename "$wt" | sed -E "s/^${WT_FREE_PREFIX}([0-9]+)$/\\1/")"
+      candidates+=("$num|$wt")
+    fi
+  done < <(all_pool_worktrees "$pool")
+
+  ((${#candidates[@]} > 0)) || return 1
+  printf '%s\n' "${candidates[@]}" | sort -t'|' -k1,1n | head -n1 | cut -d'|' -f2-
+}
+
+pick_pool_target() {
+  local repo="$1"
+  local pool="$2"
+  local query="$3"
+  local matches=()
+  local wt
+
+  while IFS= read -r wt; do
+    [[ -n "$wt" ]] || continue
+    local branch base
+    branch="$(branch_name "$wt")"
+    base="$(basename "$wt")"
+    if [[ "$branch" == *"$query"* || "$base" == *"$query"* || "$wt" == *"$query"* ]]; then
+      matches+=("$wt|$branch|$base")
+    fi
+  done < <(all_pool_worktrees "$pool")
+
+  if ((${#matches[@]} == 1)); then
+    printf '%s\n' "${matches[0]%%|*}"
+    return 0
+  fi
+
+  if ((${#matches[@]} > 1)); then
+    info "Ambiguous match for '$query':"
+    local m
+    for m in "${matches[@]}"; do
+      local path rest branch base
+      path="${m%%|*}"
+      rest="${m#*|}"
+      branch="${rest%%|*}"
+      base="${rest##*|}"
+      printf '  %s (%s)\n' "$base" "$branch"
+    done
+    return 2
+  fi
+  return 1
+}
+
+cmd_init() {
+  local repo="$1"
+  shift
+  local pool
+  pool="$(pool_dir "$repo")"
+  local base_ref
+  base_ref="$(default_base_ref "$repo")"
+  local size="$WT_POOL_SIZE"
+  local warm=0
+
+  while (($#)); do
+    case "$1" in
+      --size)
+        shift
+        [[ $# -gt 0 ]] || die "--size requires a value"
+        size="$1"
+        ;;
+      --base)
+        shift
+        [[ $# -gt 0 ]] || die "--base requires a value"
+        base_ref="$1"
+        ;;
+      --warm)
+        warm=1
+        ;;
+      *)
+        die "Unknown option for init: $1"
+        ;;
+    esac
+    shift
+  done
+
+  mkdir -p "$pool"
+  ensure_yarn
+
+  info "Initializing worktree pool in: $pool"
+  info "Base ref: $base_ref"
+  info "Slots: ${WT_FREE_PREFIX}1..${WT_FREE_PREFIX}${size}"
+
+  local i slot
+  for ((i = 1; i <= size; i++)); do
+    slot="$pool/${WT_FREE_PREFIX}${i}"
+    if git -C "$slot" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      info "  - $(basename "$slot"): already exists"
+    elif [[ -e "$slot" ]]; then
+      info "  - $(basename "$slot"): exists but not a worktree (skipping)"
+      continue
+    else
+      info "  - $(basename "$slot"): creating detached worktree"
+      git -C "$repo" worktree add --detach "$slot" "$base_ref" >/dev/null
+    fi
+
+    if ((warm)); then
+      if [[ -d "$slot/node_modules" ]]; then
+        info "    deps: already present"
+      else
+        info "    deps: running yarn install"
+        (cd "$slot" && yarn install)
+      fi
+    fi
+  done
+}
+
+cmd_list() {
+  local repo="$1"
+  shift
+  while (($#)); do
+    case "$1" in
+      --full) ;; # kept for backward compatibility; list is always full now
+      *) die "Unknown option for list: $1" ;;
+    esac
+    shift
+  done
+
+  local rows=()
+  local wt
+  while IFS= read -r wt; do
+    [[ -n "$wt" ]] || continue
+    local name status mtime mtime_h branch
+    name="$(wt_name "$repo" "$wt")"
+    branch="$(branch_name "$wt")"
+    status="clean"
+    [[ -n "$(git -C "$wt" status --porcelain)" ]] && status="dirty"
+    mtime="$(stat_mtime "$wt")"
+    mtime_h="$(relative_from_epoch "$mtime")"
+    rows+=("$mtime|$name|$status|$mtime_h|$branch")
+  done < <(git -C "$repo" worktree list --porcelain | awk '/^worktree /{print substr($0,10)}')
+
+  local name_w=4
+  local branch_w=6
+  local row line name branch
+  for row in "${rows[@]}"; do
+    line="${row#*|}"   # drop epoch
+    name="${line%%|*}"
+    if ((${#name} > name_w)); then
+      name_w=${#name}
+    fi
+    line="${line#*|}"  # drop name
+    line="${line#*|}"  # drop status
+    line="${line#*|}"  # drop modified
+    branch="${line%%|*}"
+    if ((${#branch} > branch_w)); then
+      branch_w=${#branch}
+    fi
+  done
+
+  info "Git Worktrees for $(basename "$repo")"
+  printf "%-${name_w}s  %-7s  %-16s  %-${branch_w}s\n" "NAME" "STATUS" "LAST MODIFIED" "BRANCH"
+
+  local line
+  while IFS= read -r line; do
+    local name status mtime_h branch
+    line="${line#*|}"            # drop epoch
+    name="${line%%|*}"
+    line="${line#*|}"
+    status="${line%%|*}"
+    line="${line#*|}"
+    mtime_h="${line%%|*}"
+    branch="${line#*|}"
+    printf "%-${name_w}s  %-7s  %-16s  %-${branch_w}s\n" "$name" "$status" "$mtime_h" "$branch"
+  done < <(printf '%s\n' "${rows[@]}" | sort -t'|' -k1,1nr)
+
+  info "$((${#rows[@]})) worktrees total"
+}
+
+cmd_interactive() {
+  local repo="$1"
+  shift
+  [[ $# -eq 0 ]] || die "Unknown option for interactive mode: $1"
+
+  local fzf_cmd
+  fzf_cmd="$(fzf_command)"
+
+  local rows=()
+  local wt
+  while IFS= read -r wt; do
+    [[ -n "$wt" ]] || continue
+    local name status mtime mtime_h branch
+    name="$(wt_name "$repo" "$wt")"
+    branch="$(branch_name "$wt")"
+    status="clean"
+    [[ -n "$(git -C "$wt" status --porcelain)" ]] && status="dirty"
+    mtime="$(stat_mtime "$wt")"
+    mtime_h="$(relative_from_epoch "$mtime")"
+    rows+=("$mtime|$name|$status|$mtime_h|$branch|$wt")
+  done < <(git -C "$repo" worktree list --porcelain | awk '/^worktree /{print substr($0,10)}')
+
+  local name_w=4
+  local branch_w=6
+  local row line name branch
+  for row in "${rows[@]}"; do
+    line="${row#*|}"
+    name="${line%%|*}"
+    if ((${#name} > name_w)); then
+      name_w=${#name}
+    fi
+    line="${line#*|}"
+    line="${line#*|}"
+    line="${line#*|}"
+    branch="${line%%|*}"
+    if ((${#branch} > branch_w)); then
+      branch_w=${#branch}
+    fi
+  done
+
+  local selection
+  selection="$(
+    {
+      printf "%-${name_w}s  %-7s  %-16s  %-${branch_w}s\t%s\t%s\n" "NAME" "STATUS" "LAST MODIFIED" "BRANCH" "__NAME__" "__PATH__"
+      printf '%s\n' "${rows[@]}" |
+        sort -t'|' -k1,1nr |
+        while IFS='|' read -r _mtime _name _status _mtime_h _branch _path; do
+          printf "%-${name_w}s  %-7s  %-16s  %-${branch_w}s\t%s\t%s\n" "$_name" "$_status" "$_mtime_h" "$_branch" "$_name" "$_path"
+        done
+    } |
+      "$fzf_cmd" \
+        --height=80% \
+        --reverse \
+        --header-lines=1 \
+        --delimiter=$'\t' \
+        --with-nth=1 \
+        --prompt='Choose worktree> '
+  )" || return 0
+
+  [[ -n "$selection" ]] || return 0
+
+  local name path action action_selection actions
+  name="$(awk -F $'\t' '{ print $2 }' <<<"$selection")"
+  path="$(awk -F $'\t' '{ print $3 }' <<<"$selection")"
+  [[ -n "$path" ]] || die "Could not resolve selected worktree path."
+
+  actions=$'go\tgo          \033[2mcd into this worktree\033[0m\nrelease\trelease     \033[2mdetach and return this worktree to the free pool\033[0m'
+  if is_free_slot_path "$path"; then
+    actions+=$'\ncreate\tcreate      \033[2mcreate or checkout a branch in this free worktree\033[0m'
+  fi
+
+  action_selection="$(
+    printf '%b\n' "$actions" |
+      "$fzf_cmd" \
+        --height=10 \
+        --reverse \
+        --ansi \
+        --delimiter=$'\t' \
+        --with-nth=2 \
+        --prompt='Select action> '
+  )" || return 0
+  action="$(awk -F $'\t' '{ print $1 }' <<<"$action_selection")"
+
+  case "$action" in
+    go)
+      printf '__WT_GO__\t%s\n' "$path"
+      ;;
+    release)
+      printf '__WT_RELEASE__\t%s\t%s\n' "$name" "$path"
+      ;;
+    create)
+      printf '__WT_CREATE__\n'
+      ;;
+    "")
+      return 0
+      ;;
+    *)
+      die "Unknown action: $action"
+      ;;
+  esac
+}
+
+cmd_go() {
+  local repo="$1"
+  shift
+  local print_path=0
+  local query=""
+  while (($#)); do
+    case "$1" in
+      --print-path) print_path=1 ;;
+      *) query="$1" ;;
+    esac
+    shift
+  done
+  [[ -n "$query" ]] || die "Usage: wt go <query>"
+
+  local matches=()
+  local wt
+  while IFS= read -r wt; do
+    [[ -n "$wt" ]] || continue
+    local branch base name
+    branch="$(branch_name "$wt")"
+    base="$(basename "$wt")"
+    name="$(wt_name "$repo" "$wt")"
+    if [[ "$branch" == *"$query"* || "$base" == *"$query"* || "$name" == *"$query"* || "$wt" == *"$query"* ]]; then
+      matches+=("$wt|$branch|$name")
+    fi
+  done < <(git -C "$repo" worktree list --porcelain | awk '/^worktree /{print substr($0,10)}')
+
+  if ((${#matches[@]} == 1)); then
+    local path="${matches[0]%%|*}"
+    if ((print_path)); then
+      printf '%s\n' "$path"
+    else
+      info "$path"
+      info "Run: cd $path"
+    fi
+    return 0
+  fi
+
+  if ((${#matches[@]} > 1)); then
+    info "Ambiguous match for '$query'. Did you mean:"
+    local m
+    for m in "${matches[@]}"; do
+      local path rest branch name
+      path="${m%%|*}"
+      rest="${m#*|}"
+      branch="${rest%%|*}"
+      name="${rest##*|}"
+      printf '  %s (%s)\n' "$name" "$branch"
+    done
+    return 2
+  fi
+
+  info "No worktree matching '$query'"
+  return 1
+}
+
+cmd_create() {
+  local repo="$1"
+  shift
+  local pool
+  pool="$(pool_dir "$repo")"
+  [[ -d "$pool" ]] || die "Pool directory not found: $pool"
+
+  local base_ref
+  base_ref="$(default_base_ref "$repo")"
+  local base_overridden=0
+  local branch=""
+
+  while (($#)); do
+    case "$1" in
+      --base)
+        shift
+        [[ $# -gt 0 ]] || die "--base requires a value"
+        base_ref="$1"
+        base_overridden=1
+        ;;
+      *)
+        if [[ -z "$branch" ]]; then
+          branch="$1"
+        else
+          die "Unexpected argument: $1"
+        fi
+        ;;
+    esac
+    shift
+  done
+
+  if [[ -z "$branch" ]]; then
+    if [[ -t 0 ]]; then
+      read -r -p "Branch name: " branch
+    fi
+  fi
+  [[ -n "$branch" ]] || die "Branch name is required. Usage: wt create <branch>"
+
+  local branch_exists=0
+  if git -C "$repo" show-ref --verify --quiet "refs/heads/$branch"; then
+    branch_exists=1
+  fi
+
+  if ((branch_exists == 1)); then
+    local existing_wt
+    while IFS= read -r existing_wt; do
+      [[ -n "$existing_wt" ]] || continue
+      if [[ "$(branch_name "$existing_wt")" == "$branch" ]]; then
+        die "Branch '$branch' is already checked out at: $existing_wt"
+      fi
+    done < <(git -C "$repo" worktree list --porcelain | awk '/^worktree /{print substr($0,10)}')
+  fi
+
+  if ((branch_exists == 0 && base_overridden == 0)); then
+    info "Refreshing origin/master..."
+    base_ref="$(fresh_master_ref "$repo")"
+  fi
+
+  if ((branch_exists == 0)); then
+    git -C "$repo" rev-parse --verify "${base_ref}^{commit}" >/dev/null 2>&1 || die "Base ref '$base_ref' does not exist."
+  fi
+
+  local slot
+  slot="$(pick_idle_free_slot "$pool")" || die "No clean detached free slot available. Release one first."
+  local old_head
+  old_head="$(git -C "$slot" rev-parse --verify HEAD 2>/dev/null || true)"
+
+  local target="$pool/$branch"
+  [[ ! -e "$target" ]] || die "Target worktree path already exists: $target"
+  mkdir -p "$(dirname "$target")"
+
+  info "Using free slot: $(basename "$slot")"
+  git -C "$repo" worktree move "$slot" "$target"
+
+  if ((branch_exists == 1)); then
+    git -C "$target" checkout "$branch"
+  else
+    git -C "$target" checkout -b "$branch" "$base_ref"
+  fi
+
+  ensure_yarn
+  local needs_install=0
+  if [[ ! -d "$target/node_modules" ]]; then
+    needs_install=1
+  elif [[ -n "$old_head" ]] && ! git -C "$target" diff --quiet "$old_head" HEAD -- yarn.lock >/dev/null 2>&1; then
+    needs_install=1
+  fi
+
+  if ((needs_install)); then
+    info "Installing dependencies..."
+    (cd "$target" && yarn install)
+  fi
+
+  if ((branch_exists == 1)); then
+    info "Checked out: $branch"
+  else
+    info "Created: $branch"
+    info "Base:    $base_ref"
+  fi
+  info "Path:    $target"
+}
+
+cmd_release() {
+  local repo="$1"
+  shift
+  local pool
+  pool="$(pool_dir "$repo")"
+  [[ -d "$pool" ]] || die "Pool directory not found: $pool"
+
+  local force=0
+  local query=""
+  while (($#)); do
+    case "$1" in
+      --force) force=1 ;;
+      *) query="$1" ;;
+    esac
+    shift
+  done
+  [[ -n "$query" ]] || die "Usage: wt release <branch|worktree-query> [--force]"
+
+  if [[ "$query" == "main" || "$query" == "$repo" ]]; then
+    die "'main' is the primary checkout and is not part of the recyclable pool."
+  fi
+
+  local target
+  target="$(pick_pool_target "$repo" "$pool" "$query")" || die "No pool worktree matches '$query'"
+
+  if [[ -n "$(git -C "$target" status --porcelain)" && "$force" -ne 1 ]]; then
+    die "Worktree has uncommitted changes. Commit/stash first, or use --force."
+  fi
+
+  if ! is_detached "$target"; then
+    git -C "$target" checkout --detach >/dev/null
+  fi
+
+  if is_free_slot_path "$target"; then
+    info "Already released: $(basename "$target")"
+    info "Path: $target"
+    return 0
+  fi
+
+  local free_path
+  free_path="$(next_free_slot_path "$pool")"
+  if [[ "$target" != "$free_path" ]]; then
+    git -C "$repo" worktree move "$target" "$free_path"
+  fi
+
+  info "Released to: $(basename "$free_path")"
+  info "Path: $free_path"
+}
+
+cmd_help() {
+  cat <<'EOF'
+wt - recycled git worktree pool helper
+
+Usage:
+  wt init [--size N] [--base REF] [--warm]
+  wt create [branch] [--base REF]
+  wt go <query> [--print-path]
+  wt list
+  wt release <query> [--force]
+
+Behavior:
+  - create: asks for branch name if omitted, uses a clean detached free-N slot,
+    then renames the worktree to the branch name. Existing branches are checked
+    out; new branches are created from fresh origin/master by default.
+  - release: detaches HEAD and renames worktree to smallest available free-N.
+EOF
+}
+
+main() {
+  local cmd="${1:-interactive}"
+  if [[ $# -gt 0 ]]; then
+    shift
+  fi
+
+  local repo
+  repo="$(repo_root)"
+
+  case "$cmd" in
+    interactive) cmd_interactive "$repo" "$@" ;;
+    init) cmd_init "$repo" "$@" ;;
+    create) cmd_create "$repo" "$@" ;;
+    go) cmd_go "$repo" "$@" ;;
+    list) cmd_list "$repo" "$@" ;;
+    release) cmd_release "$repo" "$@" ;;
+    help|-h|--help) cmd_help ;;
+    *) die "Unknown command: $cmd (run: wt help)" ;;
+  esac
+}
+
+main "$@"
