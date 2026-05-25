@@ -95,6 +95,44 @@ run_logged_in_dir() {
   return "$status"
 }
 
+print_dirty_files() {
+  local wt="$1"
+  info "Changed files:"
+  git -C "$wt" status --short
+}
+
+confirm_dirty_worktree() {
+  local wt="$1"
+  local force="$2"
+  local prompt="$3"
+  local consequence="$4"
+
+  if [[ -z "$(git -C "$wt" status --porcelain)" ]]; then
+    info "Worktree is clean."
+    return 0
+  fi
+
+  print_dirty_files "$wt"
+  if ((force == 1)); then
+    info "Worktree is dirty; continuing because --force/-f was provided."
+    return 0
+  fi
+
+  if [[ -t 0 ]]; then
+    local answer
+    info "$consequence"
+    read -r -p "$prompt [y/N] " answer
+    [[ "$answer" == [yY] || "$answer" == [yY][eE][sS] ]] || {
+      info "Cancelled."
+      return 1
+    }
+    info "Worktree is dirty; continuing by confirmation."
+    return 0
+  fi
+
+  die "Worktree has uncommitted changes. Re-run with --force or -f to continue anyway."
+}
+
 main_lefthook_bin() {
   local repo="$1"
   local candidate
@@ -788,6 +826,7 @@ alloc_branch() {
   local base_ref="$4"
   local base_overridden="$5"
   local preferred_slot="${6:-}"
+  local allow_dirty_slot="${7:-0}"
 
   [[ -n "$branch" ]] || die "Branch name is required. Usage: wt alloc <branch>"
   info "Alloc requested for branch: $branch"
@@ -835,7 +874,13 @@ alloc_branch() {
     slot="$preferred_slot"
     info "Using reallocated slot: $(basename "$slot")"
     is_detached "$slot" || die "Reallocated slot is not detached: $slot"
-    is_clean "$slot" || die "Reallocated slot is not clean: $slot"
+    if ! is_clean "$slot"; then
+      if ((allow_dirty_slot == 1)); then
+        info "Reallocated slot is dirty; continuing because this was explicitly confirmed."
+      else
+        die "Reallocated slot is not clean: $slot"
+      fi
+    fi
   else
     info "Looking for a clean detached free-N slot..."
     slot="$(pick_idle_free_slot "$repo" "$pool")" || die "No clean detached free slot available. Free one first."
@@ -939,7 +984,7 @@ cmd_alloc() {
     fi
   fi
 
-  alloc_branch "$repo" "$pool" "$branch" "$base_ref" "$base_overridden" ""
+  alloc_branch "$repo" "$pool" "$branch" "$base_ref" "$base_overridden" "" 0
 }
 
 cmd_realloc() {
@@ -965,7 +1010,7 @@ cmd_realloc() {
         base_ref="$1"
         base_overridden=1
         ;;
-      --force) force=1 ;;
+      --force|-f) force=1 ;;
       --yes|-y) yes=1 ;;
       *)
         if [[ -z "$query" ]]; then
@@ -980,7 +1025,7 @@ cmd_realloc() {
     shift
   done
 
-  [[ -n "$query" ]] || die "Usage: wt realloc <worktree-query> [branch] [--base REF] [--force] [--yes]"
+  [[ -n "$query" ]] || die "Usage: wt realloc <worktree-query> [branch] [--base REF] [--force|-f] [--yes]"
   if [[ -z "$branch" ]]; then
     if [[ -t 0 ]]; then
       read -r -p "Branch name: " branch
@@ -1006,14 +1051,13 @@ cmd_realloc() {
   info "Resolved worktree: $target"
 
   info "Checking worktree status..."
-  if [[ -n "$(git -C "$target" status --porcelain)" && "$force" -ne 1 ]]; then
-    die "Worktree has uncommitted changes. Commit/stash first, or use --force."
-  fi
-  if [[ -n "$(git -C "$target" status --porcelain)" ]]; then
-    info "Worktree is dirty; --force was provided."
-  else
-    info "Worktree is clean."
-  fi
+  local allow_dirty_slot=0
+  [[ -n "$(git -C "$target" status --porcelain)" ]] && allow_dirty_slot=1
+  confirm_dirty_worktree \
+    "$target" \
+    "$force" \
+    "Realloc anyway?" \
+    "These changes will be kept in this worktree while it is reallocated and may carry into the target branch." || return 0
 
   if ((yes == 0)); then
     local answer
@@ -1042,7 +1086,7 @@ cmd_realloc() {
   run_logged "Moving selected worktree to temporary free slot..." \
     git_wt "$repo" -C "$repo" worktree move "$target" "$slot"
 
-  alloc_branch "$repo" "$pool" "$branch" "$base_ref" "$base_overridden" "$slot"
+  alloc_branch "$repo" "$pool" "$branch" "$base_ref" "$base_overridden" "$slot" "$allow_dirty_slot"
 }
 
 cmd_free() {
@@ -1056,12 +1100,12 @@ cmd_free() {
   local query=""
   while (($#)); do
     case "$1" in
-      --force) force=1 ;;
+      --force|-f) force=1 ;;
       *) query="$1" ;;
     esac
     shift
   done
-  [[ -n "$query" ]] || die "Usage: wt free <branch|worktree-query> [--force]"
+  [[ -n "$query" ]] || die "Usage: wt free <branch|worktree-query> [--force|-f]"
   info "Free requested for: $query"
   info "Pool: $pool"
   info "Git hooks: $(hook_strategy "$repo")"
@@ -1075,14 +1119,11 @@ cmd_free() {
   info "Resolved worktree: $target"
 
   info "Checking worktree status..."
-  if [[ -n "$(git -C "$target" status --porcelain)" && "$force" -ne 1 ]]; then
-    die "Worktree has uncommitted changes. Commit/stash first, or use --force."
-  fi
-  if [[ -n "$(git -C "$target" status --porcelain)" ]]; then
-    info "Worktree is dirty; --force was provided."
-  else
-    info "Worktree is clean."
-  fi
+  confirm_dirty_worktree \
+    "$target" \
+    "$force" \
+    "Free anyway?" \
+    "These changes will be kept in the moved free slot. Dirty free slots are not reusable by wt alloc until cleaned." || return 0
 
   if ! is_detached "$target"; then
     info "Detaching HEAD before returning worktree to pool."
@@ -1119,13 +1160,13 @@ cmd_remove() {
   local query=""
   while (($#)); do
     case "$1" in
-      --force) force=1 ;;
+      --force|-f) force=1 ;;
       --yes|-y) yes=1 ;;
       *) query="$1" ;;
     esac
     shift
   done
-  [[ -n "$query" ]] || die "Usage: wt remove <branch|worktree-query> [--force] [--yes]"
+  [[ -n "$query" ]] || die "Usage: wt remove <branch|worktree-query> [--force|-f] [--yes]"
   info "Remove requested for: $query"
   info "Git hooks: $(hook_strategy "$repo")"
 
@@ -1191,11 +1232,11 @@ Usage:
   wt (interactive picker)
   wt grow [--size N] [--base REF] [--warm]
   wt alloc [branch] [--base REF]
-  wt realloc <query> [branch] [--base REF] [--force] [--yes]
+  wt realloc <query> [branch] [--base REF] [--force|-f] [--yes]
   wt go <query> [--print-path]
   wt list
-  wt free <query> [--force]
-  wt remove <query> [--force] [--yes]
+  wt free <query> [--force|-f]
+  wt remove <query> [--force|-f] [--yes]
   wt update
 
 Behavior:

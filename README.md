@@ -167,7 +167,12 @@ Force-free a dirty worktree:
 
 ```bash
 wt free my-feature --force
+wt free my-feature -f
 ```
+
+Without `--force`/`-f`, dirty `free` and `realloc` operations show the changed
+files and ask before continuing. Dirty changes are preserved; a dirty free slot
+will not be reused by `wt alloc` until it is cleaned.
 
 Remove a worktree:
 
