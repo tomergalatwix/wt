@@ -253,3 +253,17 @@ Dependency installation is best-effort. If `wt` finds `yarn.lock`,
 `pnpm-lock.yaml`, or `package-lock.json`, it uses the matching package manager
 when available. If the package manager is missing, `wt` prints that it skipped
 dependency installation instead of failing the worktree operation.
+
+## Tests
+
+Run the full local CLI suite:
+
+```bash
+./test.sh
+```
+
+Run one test file:
+
+```bash
+./test.sh tests/20_alloc_realloc.sh
+```
