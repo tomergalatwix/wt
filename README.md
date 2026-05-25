@@ -7,8 +7,11 @@ It gives you:
 - `wt` - an interactive `fzf` picker for worktrees and actions
 - `wt list` - a compact worktree table
 - `wt go <query>` - `cd` into a worktree by name, branch, or path match
+- `wt grow` - add reusable `free-N` worktrees to the pool
 - `wt create <branch>` - create or checkout a branch in a free worktree
 - `wt release <query>` - detach a worktree and return it to the free pool
+- `wt remove <query>` - delete a worktree from the pool
+- `wt update` - reinstall the latest version from GitHub
 
 ## Dependencies
 
@@ -17,9 +20,9 @@ Required:
 - `git`
 - `fzf`
 
-Recommended:
+Optional:
 
-- `yarn` if your repo needs dependency installation after worktree creation
+- `yarn`, `pnpm`, or `npm` if your repo has the matching lockfile and you want dependency installation after worktree creation
 
 Install `fzf` on macOS:
 
@@ -43,6 +46,18 @@ If you cloned this repo locally:
 source ~/.zshrc
 ```
 
+Update an existing install:
+
+```bash
+wt update
+```
+
+Or without relying on the installed command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tomergalatwix/wt/master/update.sh | bash
+```
+
 The installer copies:
 
 - `bin/wt` to `~/.local/bin/wt`
@@ -55,7 +70,7 @@ It also adds shell integration to `~/.zshrc` if missing.
 By default, `wt` expects the reusable pool to live under:
 
 ```text
-<repo>/.claude/worktrees
+<repo-parent>/<repo-name>-worktrees
 ```
 
 Reusable free slots are named:
@@ -75,10 +90,16 @@ export WT_POOL_DIR=/path/to/worktrees
 
 ## Examples
 
-Initialize a pool:
+Add one reusable free slot:
 
 ```bash
-wt init --size 5
+wt grow
+```
+
+Add several reusable free slots:
+
+```bash
+wt grow --size 5
 ```
 
 Open the interactive picker:
@@ -107,7 +128,7 @@ Jump back like `cd -`:
 wt go -
 ```
 
-Create a branch, then fetch and rebase it on `origin/master` with autostash:
+Create a branch from the fresh remote default branch:
 
 ```bash
 wt create my-feature
@@ -125,11 +146,23 @@ Release a worktree back into the pool:
 wt release my-feature
 ```
 
+`release` can also take the exact path of any registered Git worktree, even if
+that worktree was not created by `wt`.
+
 Force release a dirty worktree:
 
 ```bash
 wt release my-feature --force
 ```
+
+Remove a worktree:
+
+```bash
+wt remove my-feature
+```
+
+`remove` can also take the exact path of any registered Git worktree. It asks
+for confirmation unless you pass `--yes`.
 
 ## Interactive Mode
 
@@ -145,25 +178,49 @@ You will see a worktree picker with:
 NAME  STATUS  LAST MODIFIED  BRANCH
 ```
 
-After selecting a worktree, choose:
+The main picker also includes:
 
 ```text
-go          cd into this worktree
-release     detach and return this worktree to the free pool
-create      create or checkout a branch in this free worktree
+Add new worktree  action  create next free-N
 ```
 
+After selecting an existing worktree, choose:
+
+```text
+go                  cd into this worktree
+release             detach and return this worktree to the free pool
+remove              delete this worktree from the pool
+create              create or checkout a branch in this free worktree
+```
+
+`remove` is not shown for `main` and asks for confirmation.
 `create` is only shown for `free-N` worktrees.
+`Add new worktree` runs `wt grow`.
 
 ## Notes
 
 The main checkout is treated as the anchor checkout. It appears as `main` in `wt list` and `wt go main`, but it is not released into the reusable pool.
 
-`wt create` refreshes from Git directly; it does not rely on local aliases such as `rbms`. After checkout/create, it runs:
+`wt create` refreshes from Git directly; it does not rely on local aliases.
+`wt` prints each implicit step it runs: fetch/base selection, slot selection,
+worktree moves, checkout/rebase, and dependency installation decisions.
+
+Git hooks are disabled for `wt`-managed Git operations with `LEFTHOOK=0` and
+`core.hooksPath=/dev/null`. This avoids repo hook prerequisites, such as a
+missing `lefthook`, blocking worktree pool management.
+
+For new branches, it fetches the remote default branch, creates the branch from that fresh ref, and jumps your shell into the new worktree.
+
+For existing branches, it checks out the branch, then runs:
 
 ```bash
 git fetch
-git rebase origin/master --autostash
+git rebase <remote-default-branch> --autostash
 ```
 
-Pass `--base <ref>` to create from a different initial base; the rebase target remains `origin/master`.
+Pass `--base <ref>` to create a new branch from a different initial base.
+
+Dependency installation is best-effort. If `wt` finds `yarn.lock`,
+`pnpm-lock.yaml`, or `package-lock.json`, it uses the matching package manager
+when available. If the package manager is missing, `wt` prints that it skipped
+dependency installation instead of failing the worktree operation.

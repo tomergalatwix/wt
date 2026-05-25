@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-WT_POOL_SIZE="${WT_POOL_SIZE:-5}"
 WT_FREE_PREFIX="${WT_FREE_PREFIX:-free-}"
+WT_REPO_RAW_BASE="${WT_REPO_RAW_BASE:-https://raw.githubusercontent.com/tomergalatwix/wt/master}"
 
 die() {
   echo "Error: $*" >&2
@@ -11,6 +11,10 @@ die() {
 
 info() {
   echo "$*"
+}
+
+git_no_hooks() {
+  LEFTHOOK=0 git -c core.hooksPath=/dev/null "$@"
 }
 
 repo_root() {
@@ -26,36 +30,55 @@ repo_root() {
 
 default_base_ref() {
   local repo="$1"
-  if git -C "$repo" show-ref --verify --quiet refs/heads/master; then
-    echo "master"
+  local remote_ref
+  remote_ref="$(git -C "$repo" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+
+  if [[ -n "$remote_ref" ]] && git -C "$repo" show-ref --verify --quiet "refs/remotes/$remote_ref"; then
+    echo "$remote_ref"
   elif git -C "$repo" show-ref --verify --quiet refs/remotes/origin/master; then
     echo "origin/master"
-  elif git -C "$repo" show-ref --verify --quiet refs/heads/main; then
-    echo "main"
   elif git -C "$repo" show-ref --verify --quiet refs/remotes/origin/main; then
     echo "origin/main"
+  elif git -C "$repo" show-ref --verify --quiet refs/heads/master; then
+    echo "master"
+  elif git -C "$repo" show-ref --verify --quiet refs/heads/main; then
+    echo "main"
   else
     echo "HEAD"
   fi
 }
 
-fresh_master_ref() {
+fresh_default_ref() {
   local repo="$1"
+  local branch=""
+  local remote_ref
 
   if git -C "$repo" remote get-url origin >/dev/null 2>&1; then
-    if git -C "$repo" fetch --prune origin master >/dev/null 2>&1 &&
-      git -C "$repo" show-ref --verify --quiet refs/remotes/origin/master; then
-      echo "origin/master"
+    remote_ref="$(git -C "$repo" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+    if [[ "$remote_ref" == origin/* ]]; then
+      branch="${remote_ref#origin/}"
+    elif git -C "$repo" show-ref --verify --quiet refs/remotes/origin/master; then
+      branch="master"
+    elif git -C "$repo" show-ref --verify --quiet refs/remotes/origin/main; then
+      branch="main"
+    fi
+
+    if [[ -n "$branch" ]] &&
+      git_no_hooks -C "$repo" fetch --prune origin "$branch" >/dev/null 2>&1 &&
+      git -C "$repo" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+      echo "origin/$branch"
       return 0
     fi
   fi
 
-  if git -C "$repo" show-ref --verify --quiet refs/heads/master; then
-    echo "master"
-    return 0
-  fi
+  for branch in master main; do
+    if git -C "$repo" show-ref --verify --quiet "refs/heads/$branch"; then
+      echo "$branch"
+      return 0
+    fi
+  done
 
-  die "Could not refresh origin/master and local master does not exist."
+  die "Could not refresh origin default branch and local master/main does not exist."
 }
 
 pool_dir() {
@@ -63,7 +86,7 @@ pool_dir() {
   if [[ -n "${WT_POOL_DIR:-}" ]]; then
     echo "$WT_POOL_DIR"
   else
-    echo "$repo/.claude/worktrees"
+    echo "$(dirname "$repo")/$(basename "$repo")-worktrees"
   fi
 }
 
@@ -150,8 +173,28 @@ relative_from_epoch() {
   fi
 }
 
-ensure_yarn() {
-  command -v yarn >/dev/null 2>&1 || die "yarn is required but not found in PATH."
+install_command_for() {
+  local wt="$1"
+  if [[ -f "$wt/yarn.lock" ]]; then
+    command -v yarn >/dev/null 2>&1 && echo "yarn install"
+  elif [[ -f "$wt/pnpm-lock.yaml" ]]; then
+    command -v pnpm >/dev/null 2>&1 && echo "pnpm install"
+  elif [[ -f "$wt/package-lock.json" ]]; then
+    command -v npm >/dev/null 2>&1 && echo "npm install"
+  fi
+  return 0
+}
+
+lockfile_for() {
+  local wt="$1"
+  if [[ -f "$wt/yarn.lock" ]]; then
+    echo "yarn.lock"
+  elif [[ -f "$wt/pnpm-lock.yaml" ]]; then
+    echo "pnpm-lock.yaml"
+  elif [[ -f "$wt/package-lock.json" ]]; then
+    echo "package-lock.json"
+  fi
+  return 0
 }
 
 fzf_command() {
@@ -160,14 +203,33 @@ fzf_command() {
   echo "$fzf_cmd"
 }
 
+download_file() {
+  local url="$1"
+  local dest="$2"
+
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$url" -o "$dest"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$dest" "$url"
+  else
+    die "curl or wget is required."
+  fi
+}
+
 all_pool_worktrees() {
-  local pool="$1"
-  [[ -d "$pool" ]] || return 0
-  find "$pool" -maxdepth 1 -mindepth 1 -type d | while IFS= read -r d; do
-    if git -C "$d" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-      printf '%s\n' "$d"
-    fi
-  done | sort
+  local repo="$1"
+  local pool="$2"
+  all_worktrees "$repo" |
+    while IFS= read -r d; do
+      [[ "$d" == "$pool"/* ]] && printf '%s\n' "$d"
+    done | sort
+}
+
+all_worktrees() {
+  local repo="$1"
+  git_no_hooks -C "$repo" worktree list --porcelain |
+    awk '/^worktree /{print substr($0,10)}' |
+    sort
 }
 
 is_free_slot_path() {
@@ -186,7 +248,8 @@ next_free_slot_path() {
 }
 
 pick_idle_free_slot() {
-  local pool="$1"
+  local repo="$1"
+  local pool="$2"
   local candidates=()
   local wt
   while IFS= read -r wt; do
@@ -197,28 +260,28 @@ pick_idle_free_slot() {
       num="$(basename "$wt" | sed -E "s/^${WT_FREE_PREFIX}([0-9]+)$/\\1/")"
       candidates+=("$num|$wt")
     fi
-  done < <(all_pool_worktrees "$pool")
+  done < <(all_pool_worktrees "$repo" "$pool")
 
   ((${#candidates[@]} > 0)) || return 1
   printf '%s\n' "${candidates[@]}" | sort -t'|' -k1,1n | head -n1 | cut -d'|' -f2-
 }
 
-pick_pool_target() {
+pick_worktree_target() {
   local repo="$1"
-  local pool="$2"
-  local query="$3"
+  local query="$2"
   local matches=()
   local wt
 
   while IFS= read -r wt; do
     [[ -n "$wt" ]] || continue
-    local branch base
+    local branch base name
     branch="$(branch_name "$wt")"
     base="$(basename "$wt")"
-    if [[ "$branch" == *"$query"* || "$base" == *"$query"* || "$wt" == *"$query"* ]]; then
-      matches+=("$wt|$branch|$base")
+    name="$(wt_name "$repo" "$wt")"
+    if [[ "$wt" == "$query" || "$branch" == *"$query"* || "$base" == *"$query"* || "$name" == *"$query"* || "$wt" == *"$query"* ]]; then
+      matches+=("$wt|$branch|$name")
     fi
-  done < <(all_pool_worktrees "$pool")
+  done < <(all_worktrees "$repo")
 
   if ((${#matches[@]} == 1)); then
     printf '%s\n' "${matches[0]%%|*}"
@@ -229,26 +292,26 @@ pick_pool_target() {
     info "Ambiguous match for '$query':"
     local m
     for m in "${matches[@]}"; do
-      local path rest branch base
+      local path rest branch name
       path="${m%%|*}"
       rest="${m#*|}"
       branch="${rest%%|*}"
-      base="${rest##*|}"
-      printf '  %s (%s)\n' "$base" "$branch"
+      name="${rest##*|}"
+      printf '  %s (%s)\n' "$name" "$branch"
     done
     return 2
   fi
   return 1
 }
 
-cmd_init() {
+cmd_grow() {
   local repo="$1"
   shift
   local pool
   pool="$(pool_dir "$repo")"
   local base_ref
   base_ref="$(default_base_ref "$repo")"
-  local size="$WT_POOL_SIZE"
+  local size=1
   local warm=0
 
   while (($#)); do
@@ -267,38 +330,44 @@ cmd_init() {
         warm=1
         ;;
       *)
-        die "Unknown option for init: $1"
+        die "Unknown option for grow: $1"
         ;;
     esac
     shift
   done
+  [[ "$size" =~ ^[0-9]+$ && "$size" -gt 0 ]] || die "--size must be a positive integer"
 
   mkdir -p "$pool"
-  ensure_yarn
+  git -C "$repo" rev-parse --verify "${base_ref}^{commit}" >/dev/null 2>&1 || die "Base ref '$base_ref' does not exist."
 
-  info "Initializing worktree pool in: $pool"
+  info "Growing worktree pool in: $pool"
   info "Base ref: $base_ref"
-  info "Slots: ${WT_FREE_PREFIX}1..${WT_FREE_PREFIX}${size}"
+  info "Adding: $size"
+  info "Git hooks: disabled for wt-managed git operations"
 
   local i slot
   for ((i = 1; i <= size; i++)); do
-    slot="$pool/${WT_FREE_PREFIX}${i}"
-    if git -C "$slot" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-      info "  - $(basename "$slot"): already exists"
-    elif [[ -e "$slot" ]]; then
-      info "  - $(basename "$slot"): exists but not a worktree (skipping)"
-      continue
-    else
-      info "  - $(basename "$slot"): creating detached worktree"
-      git -C "$repo" worktree add --detach "$slot" "$base_ref" >/dev/null
-    fi
+    slot="$(next_free_slot_path "$pool")"
+    info "  - $(basename "$slot"): creating detached worktree at $slot"
+    git_no_hooks -C "$repo" worktree add -q --detach "$slot" "$base_ref"
 
     if ((warm)); then
+      local install_cmd lockfile
+      lockfile="$(lockfile_for "$slot")"
+      install_cmd="$(install_command_for "$slot")"
+      if [[ -z "$lockfile" ]]; then
+        info "    deps: no supported lockfile found; skipping install"
+        continue
+      fi
+      if [[ -z "$install_cmd" ]]; then
+        info "    deps: found $lockfile, but matching package manager is not in PATH; skipping install"
+        continue
+      fi
       if [[ -d "$slot/node_modules" ]]; then
-        info "    deps: already present"
+        info "    deps: node_modules already present; skipping $install_cmd"
       else
-        info "    deps: running yarn install"
-        (cd "$slot" && yarn install)
+        info "    deps: running $install_cmd"
+        (cd "$slot" && $install_cmd)
       fi
     fi
   done
@@ -327,7 +396,7 @@ cmd_list() {
     mtime="$(stat_mtime "$wt")"
     mtime_h="$(relative_from_epoch "$mtime")"
     rows+=("$mtime|$name|$status|$mtime_h|$branch")
-  done < <(git -C "$repo" worktree list --porcelain | awk '/^worktree /{print substr($0,10)}')
+  done < <(all_worktrees "$repo")
 
   local name_w=4
   local branch_w=6
@@ -386,10 +455,10 @@ cmd_interactive() {
     mtime="$(stat_mtime "$wt")"
     mtime_h="$(relative_from_epoch "$mtime")"
     rows+=("$mtime|$name|$status|$mtime_h|$branch|$wt")
-  done < <(git -C "$repo" worktree list --porcelain | awk '/^worktree /{print substr($0,10)}')
+  done < <(all_worktrees "$repo")
 
-  local name_w=4
-  local branch_w=6
+  local name_w=16
+  local branch_w=18
   local row line name branch
   for row in "${rows[@]}"; do
     line="${row#*|}"
@@ -415,6 +484,7 @@ cmd_interactive() {
         while IFS='|' read -r _mtime _name _status _mtime_h _branch _path; do
           printf "%-${name_w}s  %-7s  %-16s  %-${branch_w}s\t%s\t%s\n" "$_name" "$_status" "$_mtime_h" "$_branch" "$_name" "$_path"
         done
+      printf "%-${name_w}s  %-7s  %-16s  %-${branch_w}s\t%s\t%s\n" "Add new worktree" "" "" "" "__WT_GROW__" "__WT_GROW__"
     } |
       "$fzf_cmd" \
         --height=80% \
@@ -431,14 +501,24 @@ cmd_interactive() {
   name="$(awk -F $'\t' '{ print $2 }' <<<"$selection")"
   path="$(awk -F $'\t' '{ print $3 }' <<<"$selection")"
   [[ -n "$path" ]] || die "Could not resolve selected worktree path."
-
-  actions=$'go\tgo          \033[2mcd into this worktree\033[0m\nrelease\trelease     \033[2mdetach and return this worktree to the free pool\033[0m'
-  if is_free_slot_path "$path"; then
-    actions+=$'\ncreate\tcreate      \033[2mcreate or checkout a branch in this free worktree\033[0m'
+  if [[ "$path" == "__WT_GROW__" ]]; then
+    printf '__WT_GROW__\n'
+    return 0
   fi
 
+  actions="$(
+    printf '%s\t%-18s    \033[2m%s\033[0m\n' "go" "go" "cd into this worktree"
+    printf '%s\t%-18s    \033[2m%s\033[0m\n' "release" "release" "detach and return this worktree to the free pool"
+    if [[ "$path" != "$repo" ]]; then
+      printf '%s\t%-18s    \033[2m%s\033[0m\n' "remove" "remove" "delete this worktree from the pool"
+    fi
+    if is_free_slot_path "$path"; then
+      printf '%s\t%-18s    \033[2m%s\033[0m\n' "create" "create" "create or checkout a branch in this free worktree"
+    fi
+  )"
+
   action_selection="$(
-    printf '%b\n' "$actions" |
+    printf '%s\n' "$actions" |
       "$fzf_cmd" \
         --height=10 \
         --reverse \
@@ -455,6 +535,9 @@ cmd_interactive() {
       ;;
     release)
       printf '__WT_RELEASE__\t%s\t%s\n' "$name" "$path"
+      ;;
+    remove)
+      printf '__WT_REMOVE__\t%s\t%s\n' "$name" "$path"
       ;;
     create)
       printf '__WT_CREATE__\n'
@@ -493,7 +576,7 @@ cmd_go() {
     if [[ "$branch" == *"$query"* || "$base" == *"$query"* || "$name" == *"$query"* || "$wt" == *"$query"* ]]; then
       matches+=("$wt|$branch|$name")
     fi
-  done < <(git -C "$repo" worktree list --porcelain | awk '/^worktree /{print substr($0,10)}')
+  done < <(all_worktrees "$repo")
 
   if ((${#matches[@]} == 1)); then
     local path="${matches[0]%%|*}"
@@ -529,7 +612,7 @@ cmd_create() {
   shift
   local pool
   pool="$(pool_dir "$repo")"
-  [[ -d "$pool" ]] || die "Pool directory not found: $pool"
+  mkdir -p "$pool"
 
   local base_ref
   base_ref="$(default_base_ref "$repo")"
@@ -561,10 +644,18 @@ cmd_create() {
     fi
   fi
   [[ -n "$branch" ]] || die "Branch name is required. Usage: wt create <branch>"
+  info "Create requested for branch: $branch"
+  info "Pool: $(pool_dir "$repo")"
+  info "Git hooks: disabled for wt-managed git operations"
 
   local branch_exists=0
   if git -C "$repo" show-ref --verify --quiet "refs/heads/$branch"; then
     branch_exists=1
+  fi
+  if ((branch_exists == 1)); then
+    info "Branch mode: existing local branch"
+  else
+    info "Branch mode: new local branch"
   fi
 
   if ((branch_exists == 1)); then
@@ -574,20 +665,28 @@ cmd_create() {
       if [[ "$(branch_name "$existing_wt")" == "$branch" ]]; then
         die "Branch '$branch' is already checked out at: $existing_wt"
       fi
-    done < <(git -C "$repo" worktree list --porcelain | awk '/^worktree /{print substr($0,10)}')
+    done < <(all_worktrees "$repo")
   fi
 
-  if ((branch_exists == 0 && base_overridden == 0)); then
-    info "Refreshing origin/master..."
-    base_ref="$(fresh_master_ref "$repo")"
+  local rebase_ref="$base_ref"
+  if ((base_overridden == 0)); then
+    info "Refreshing remote default branch..."
+    rebase_ref="$(fresh_default_ref "$repo")"
+    info "Remote default branch ref: $rebase_ref"
+    if ((branch_exists == 0)); then
+      base_ref="$rebase_ref"
+    fi
+  else
+    info "Base override: $base_ref"
   fi
 
-  if ((branch_exists == 0)); then
+  if ((branch_exists == 0 || base_overridden == 1)); then
     git -C "$repo" rev-parse --verify "${base_ref}^{commit}" >/dev/null 2>&1 || die "Base ref '$base_ref' does not exist."
   fi
 
   local slot
-  slot="$(pick_idle_free_slot "$pool")" || die "No clean detached free slot available. Release one first."
+  info "Looking for a clean detached free-N slot..."
+  slot="$(pick_idle_free_slot "$repo" "$pool")" || die "No clean detached free slot available. Release one first."
   local old_head
   old_head="$(git -C "$slot" rev-parse --verify HEAD 2>/dev/null || true)"
 
@@ -596,32 +695,44 @@ cmd_create() {
   mkdir -p "$(dirname "$target")"
 
   info "Using free slot: $(basename "$slot")"
-  git -C "$repo" worktree move "$slot" "$target"
+  info "Moving worktree: $slot -> $target"
+  git_no_hooks -C "$repo" worktree move "$slot" "$target"
 
   if ((branch_exists == 1)); then
-    git -C "$target" checkout "$branch"
+    info "Checking out existing branch: $branch"
+    git_no_hooks -C "$target" checkout --quiet "$branch"
+    info "Rebasing on $rebase_ref..."
+    (
+      cd "$target"
+      git_no_hooks rebase "$rebase_ref" --autostash
+    )
   else
-    git -C "$target" checkout -b "$branch" "$base_ref"
+    info "Creating branch $branch from $base_ref"
+    git_no_hooks -C "$target" checkout --quiet -b "$branch" "$base_ref"
   fi
 
-  info "Rebasing on origin/master..."
-  (
-    cd "$target"
-    git fetch
-    git rebase origin/master --autostash
-  )
-
-  ensure_yarn
+  local install_cmd lockfile
+  install_cmd="$(install_command_for "$target")"
+  lockfile="$(lockfile_for "$target")"
   local needs_install=0
-  if [[ ! -d "$target/node_modules" ]]; then
+  info "Checking dependencies..."
+  if [[ -z "$lockfile" ]]; then
+    info "No supported JS lockfile found; skipping dependency install."
+  elif [[ -z "$install_cmd" ]]; then
+    info "Found $lockfile, but matching package manager is not in PATH; skipping dependency install."
+  elif [[ ! -d "$target/node_modules" ]]; then
+    info "node_modules is missing; will run $install_cmd."
     needs_install=1
-  elif [[ -n "$old_head" ]] && ! git -C "$target" diff --quiet "$old_head" HEAD -- yarn.lock >/dev/null 2>&1; then
+  elif [[ -n "$old_head" && -n "$lockfile" ]] && ! git -C "$target" diff --quiet "$old_head" HEAD -- "$lockfile" >/dev/null 2>&1; then
+    info "$lockfile changed while reusing the slot; will run $install_cmd."
     needs_install=1
+  else
+    info "node_modules is present and lockfile did not change; skipping dependency install."
   fi
 
   if ((needs_install)); then
-    info "Installing dependencies..."
-    (cd "$target" && yarn install)
+    info "Installing dependencies with $install_cmd..."
+    (cd "$target" && $install_cmd)
   fi
 
   if ((branch_exists == 1)); then
@@ -631,6 +742,9 @@ cmd_create() {
     info "Base:    $base_ref"
   fi
   info "Path:    $target"
+  if [[ "${WT_SHELL_INTEGRATION:-0}" == "1" ]]; then
+    printf '__WT_CREATED__\t%s\n' "$target"
+  fi
 }
 
 cmd_release() {
@@ -638,7 +752,7 @@ cmd_release() {
   shift
   local pool
   pool="$(pool_dir "$repo")"
-  [[ -d "$pool" ]] || die "Pool directory not found: $pool"
+  mkdir -p "$pool"
 
   local force=0
   local query=""
@@ -650,20 +764,33 @@ cmd_release() {
     shift
   done
   [[ -n "$query" ]] || die "Usage: wt release <branch|worktree-query> [--force]"
+  info "Release requested for: $query"
+  info "Pool: $pool"
+  info "Git hooks: disabled for wt-managed git operations"
 
   if [[ "$query" == "main" || "$query" == "$repo" ]]; then
     die "'main' is the primary checkout and is not part of the recyclable pool."
   fi
 
   local target
-  target="$(pick_pool_target "$repo" "$pool" "$query")" || die "No pool worktree matches '$query'"
+  target="$(pick_worktree_target "$repo" "$query")" || die "No worktree matches '$query'"
+  info "Resolved worktree: $target"
 
+  info "Checking worktree status..."
   if [[ -n "$(git -C "$target" status --porcelain)" && "$force" -ne 1 ]]; then
     die "Worktree has uncommitted changes. Commit/stash first, or use --force."
   fi
+  if [[ -n "$(git -C "$target" status --porcelain)" ]]; then
+    info "Worktree is dirty; --force was provided."
+  else
+    info "Worktree is clean."
+  fi
 
   if ! is_detached "$target"; then
-    git -C "$target" checkout --detach >/dev/null
+    info "Detaching HEAD before returning worktree to pool."
+    git_no_hooks -C "$target" checkout --quiet --detach
+  else
+    info "HEAD is already detached."
   fi
 
   if is_free_slot_path "$target"; then
@@ -675,11 +802,83 @@ cmd_release() {
   local free_path
   free_path="$(next_free_slot_path "$pool")"
   if [[ "$target" != "$free_path" ]]; then
-    git -C "$repo" worktree move "$target" "$free_path"
+    info "Moving worktree to free slot: $free_path"
+    git_no_hooks -C "$repo" worktree move "$target" "$free_path"
   fi
 
   info "Released to: $(basename "$free_path")"
   info "Path: $free_path"
+}
+
+cmd_remove() {
+  local repo="$1"
+  shift
+
+  local force=0
+  local yes=0
+  local query=""
+  while (($#)); do
+    case "$1" in
+      --force) force=1 ;;
+      --yes|-y) yes=1 ;;
+      *) query="$1" ;;
+    esac
+    shift
+  done
+  [[ -n "$query" ]] || die "Usage: wt remove <branch|worktree-query> [--force] [--yes]"
+  info "Remove requested for: $query"
+  info "Git hooks: disabled for wt-managed git operations"
+
+  if [[ "$query" == "main" || "$query" == "$repo" ]]; then
+    die "'main' is the primary checkout and cannot be removed by wt."
+  fi
+
+  local target
+  target="$(pick_worktree_target "$repo" "$query")" || die "No worktree matches '$query'"
+  info "Resolved worktree: $target"
+
+  info "Checking worktree status..."
+  if [[ -n "$(git -C "$target" status --porcelain)" && "$force" -ne 1 ]]; then
+    die "Worktree has uncommitted changes. Commit/stash first, or use --force."
+  fi
+  if [[ -n "$(git -C "$target" status --porcelain)" ]]; then
+    info "Worktree is dirty; --force was provided."
+  else
+    info "Worktree is clean."
+  fi
+
+  if ((yes == 0)); then
+    local answer
+    if [[ -t 0 ]]; then
+      read -r -p "Remove $(basename "$target") ($target)? This deletes the worktree directory. [y/N] " answer
+      [[ "$answer" == [yY] || "$answer" == [yY][eE][sS] ]] || {
+        info "Remove cancelled."
+        return 0
+      }
+    else
+      die "Removal requires confirmation. Re-run with --yes if intentional."
+    fi
+  fi
+
+  if ((force)); then
+    info "Removing worktree with --force."
+    git_no_hooks -C "$repo" worktree remove --force "$target"
+  else
+    info "Removing worktree."
+    git_no_hooks -C "$repo" worktree remove "$target"
+  fi
+  info "Removed: $(basename "$target")"
+  info "Path: $target"
+}
+
+cmd_update() {
+  local tmp
+  tmp="$(mktemp -t wt-install.XXXXXX)"
+  trap 'rm -f "$tmp"' RETURN
+
+  info "Downloading installer from: $WT_REPO_RAW_BASE/install.sh"
+  download_file "$WT_REPO_RAW_BASE/install.sh" "$tmp"
+  bash "$tmp"
 }
 
 cmd_help() {
@@ -687,17 +886,22 @@ cmd_help() {
 wt - recycled git worktree pool helper
 
 Usage:
-  wt init [--size N] [--base REF] [--warm]
+  wt (interactive picker)
+  wt grow [--size N] [--base REF] [--warm]
   wt create [branch] [--base REF]
   wt go <query> [--print-path]
   wt list
   wt release <query> [--force]
+  wt remove <query> [--force] [--yes]
+  wt update
 
 Behavior:
-  - create: asks for branch name if omitted, uses a clean detached free-N slot,
-    then renames the worktree to the branch name. Existing branches are checked
-    out; new branches are created from fresh origin/master by default.
+  - grow: adds new detached free-N slots to the reusable pool.
+  - create: uses a free worktree for a new/existing branch (new starts at remote default).
   - release: detaches HEAD and renames worktree to smallest available free-N.
+  - remove: deletes a pool worktree after confirmation; main is protected.
+  - update: downloads the latest installer from GitHub and reinstalls wt.
+  - go: prints a path normally; with shell integration, changes directory.
 EOF
 }
 
@@ -707,17 +911,22 @@ main() {
     shift
   fi
 
+  case "$cmd" in
+    help|-h|--help) cmd_help; return 0 ;;
+    update) cmd_update "$@"; return 0 ;;
+  esac
+
   local repo
   repo="$(repo_root)"
 
   case "$cmd" in
     interactive) cmd_interactive "$repo" "$@" ;;
-    init) cmd_init "$repo" "$@" ;;
+    grow) cmd_grow "$repo" "$@" ;;
     create) cmd_create "$repo" "$@" ;;
     go) cmd_go "$repo" "$@" ;;
     list) cmd_list "$repo" "$@" ;;
     release) cmd_release "$repo" "$@" ;;
-    help|-h|--help) cmd_help ;;
+    remove) cmd_remove "$repo" "$@" ;;
     *) die "Unknown command: $cmd (run: wt help)" ;;
   esac
 }
