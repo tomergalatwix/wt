@@ -32,7 +32,7 @@ brew install fzf
 Install from a published GitHub repo:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tomergal/wt/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tomergalatwix/wt/master/install.sh | bash
 source ~/.zshrc
 ```
 
@@ -107,7 +107,7 @@ Jump back like `cd -`:
 wt go -
 ```
 
-Create a branch from fresh `origin/master`:
+Create a branch, then fetch and rebase it on `origin/master` with autostash:
 
 ```bash
 wt create my-feature
@@ -159,4 +159,11 @@ create      create or checkout a branch in this free worktree
 
 The main checkout is treated as the anchor checkout. It appears as `main` in `wt list` and `wt go main`, but it is not released into the reusable pool.
 
-`wt create` refreshes `origin/master` by default for new branches. Pass `--base <ref>` to create from a different base.
+`wt create` refreshes from Git directly; it does not rely on local aliases such as `rbms`. After checkout/create, it runs:
+
+```bash
+git fetch
+git rebase origin/master --autostash
+```
+
+Pass `--base <ref>` to create from a different initial base; the rebase target remains `origin/master`.

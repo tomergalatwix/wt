@@ -604,6 +604,13 @@ cmd_create() {
     git -C "$target" checkout -b "$branch" "$base_ref"
   fi
 
+  info "Rebasing on origin/master..."
+  (
+    cd "$target"
+    git fetch
+    git rebase origin/master --autostash
+  )
+
   ensure_yarn
   local needs_install=0
   if [[ ! -d "$target/node_modules" ]]; then

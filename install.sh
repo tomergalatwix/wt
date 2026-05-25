@@ -5,7 +5,7 @@ INSTALL_DIR="${WT_INSTALL_DIR:-$HOME/.local/bin}"
 CONFIG_DIR="${WT_CONFIG_DIR:-$HOME/.config/wt}"
 SHELL_RC="${WT_SHELL_RC:-$HOME/.zshrc}"
 
-REPO_RAW_BASE="${WT_REPO_RAW_BASE:-https://raw.githubusercontent.com/tomergal/wt/main}"
+REPO_RAW_BASE="${WT_REPO_RAW_BASE:-https://raw.githubusercontent.com/tomergalatwix/wt/master}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 install_from_local_repo() {
