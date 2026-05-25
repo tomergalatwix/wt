@@ -546,18 +546,25 @@ cmd_interactive() {
     path="$(awk -F $'\t' '{ print $3 }' <<<"$selection")"
     [[ -n "$path" ]] || die "Could not resolve selected worktree path."
     if [[ "$path" == "__WT_GROW__" ]]; then
-      printf '__WT_GROW__\n'
+      if [[ "${WT_SHELL_INTEGRATION:-0}" == "1" ]]; then
+        printf '__WT_GROW__\n'
+      else
+        cmd_grow "$repo"
+      fi
       return 0
     fi
 
     actions="$(
       printf '%s\t%-18s    \033[2m%s\033[0m\n' "go" "go" "cd into this worktree"
-      printf '%s\t%-18s    \033[2m%s\033[0m\n' "release" "release" "detach and return this worktree to the free pool"
-      if [[ "$path" != "$repo" ]]; then
-        printf '%s\t%-18s    \033[2m%s\033[0m\n' "remove" "remove" "delete this worktree from the pool"
+      if [[ "$path" != "$repo" ]] && ! is_free_slot_path "$path"; then
+        printf '%s\t%-18s    \033[2m%s\033[0m\n' "free" "free" "detach and return this worktree to the free pool"
+        printf '%s\t%-18s    \033[2m%s\033[0m\n' "realloc" "realloc" "free this worktree and allocate another branch into it"
       fi
       if is_free_slot_path "$path"; then
         printf '%s\t%-18s    \033[2m%s\033[0m\n' "alloc" "alloc" "allocate a new/existing branch in this free worktree"
+      fi
+      if [[ "$path" != "$repo" ]]; then
+        printf '%s\t%-18s    \033[2m%s\033[0m\n' "remove" "remove" "delete this worktree from the pool"
       fi
     )"
 
@@ -588,16 +595,40 @@ cmd_interactive() {
 
     case "$action" in
       go)
-        printf '__WT_GO__\t%s\n' "$path"
+        if [[ "${WT_SHELL_INTEGRATION:-0}" == "1" ]]; then
+          printf '__WT_GO__\t%s\n' "$path"
+        else
+          info "$path"
+          info "Run: cd $path"
+        fi
         ;;
-      release)
-        printf '__WT_RELEASE__\t%s\t%s\n' "$name" "$path"
+      free)
+        if [[ "${WT_SHELL_INTEGRATION:-0}" == "1" ]]; then
+          printf '__WT_FREE__\t%s\t%s\n' "$name" "$path"
+        else
+          die "Shell integration is not loaded. Run: source ~/.config/wt/wt.zsh"
+        fi
+        ;;
+      realloc)
+        if [[ "${WT_SHELL_INTEGRATION:-0}" == "1" ]]; then
+          printf '__WT_REALLOC__\t%s\t%s\n' "$name" "$path"
+        else
+          die "Shell integration is not loaded. Run: source ~/.config/wt/wt.zsh"
+        fi
         ;;
       remove)
-        printf '__WT_REMOVE__\t%s\t%s\n' "$name" "$path"
+        if [[ "${WT_SHELL_INTEGRATION:-0}" == "1" ]]; then
+          printf '__WT_REMOVE__\t%s\t%s\n' "$name" "$path"
+        else
+          die "Shell integration is not loaded. Run: source ~/.config/wt/wt.zsh"
+        fi
         ;;
       alloc)
-        printf '__WT_ALLOC__\n'
+        if [[ "${WT_SHELL_INTEGRATION:-0}" == "1" ]]; then
+          printf '__WT_ALLOC__\n'
+        else
+          cmd_alloc "$repo"
+        fi
         ;;
       "")
         return 0
@@ -666,45 +697,17 @@ cmd_go() {
   return 1
 }
 
-cmd_alloc() {
+alloc_branch() {
   local repo="$1"
-  shift
-  local pool
-  pool="$(pool_dir "$repo")"
-  mkdir -p "$pool"
+  local pool="$2"
+  local branch="$3"
+  local base_ref="$4"
+  local base_overridden="$5"
+  local preferred_slot="${6:-}"
 
-  local base_ref
-  base_ref="$(default_base_ref "$repo")"
-  local base_overridden=0
-  local branch=""
-
-  while (($#)); do
-    case "$1" in
-      --base)
-        shift
-        [[ $# -gt 0 ]] || die "--base requires a value"
-        base_ref="$1"
-        base_overridden=1
-        ;;
-      *)
-        if [[ -z "$branch" ]]; then
-          branch="$1"
-        else
-          die "Unexpected argument: $1"
-        fi
-        ;;
-    esac
-    shift
-  done
-
-  if [[ -z "$branch" ]]; then
-    if [[ -t 0 ]]; then
-      read -r -p "Branch name: " branch
-    fi
-  fi
   [[ -n "$branch" ]] || die "Branch name is required. Usage: wt alloc <branch>"
   info "Alloc requested for branch: $branch"
-  info "Pool: $(pool_dir "$repo")"
+  info "Pool: $pool"
   info "Git hooks: $(hook_strategy "$repo")"
 
   local branch_exists=0
@@ -744,8 +747,16 @@ cmd_alloc() {
   fi
 
   local slot
-  info "Looking for a clean detached free-N slot..."
-  slot="$(pick_idle_free_slot "$repo" "$pool")" || die "No clean detached free slot available. Release one first."
+  if [[ -n "$preferred_slot" ]]; then
+    slot="$preferred_slot"
+    info "Using reallocated slot: $(basename "$slot")"
+    is_detached "$slot" || die "Reallocated slot is not detached: $slot"
+    is_clean "$slot" || die "Reallocated slot is not clean: $slot"
+  else
+    info "Looking for a clean detached free-N slot..."
+    slot="$(pick_idle_free_slot "$repo" "$pool")" || die "No clean detached free slot available. Free one first."
+    info "Using free slot: $(basename "$slot")"
+  fi
   local old_head
   old_head="$(git -C "$slot" rev-parse --verify HEAD 2>/dev/null || true)"
 
@@ -753,7 +764,6 @@ cmd_alloc() {
   [[ ! -e "$target" ]] || die "Target worktree path already exists: $target"
   mkdir -p "$(dirname "$target")"
 
-  info "Using free slot: $(basename "$slot")"
   info "Moving worktree: $slot -> $target"
   git_wt "$repo" -C "$repo" worktree move "$slot" "$target"
 
@@ -806,7 +816,148 @@ cmd_alloc() {
   fi
 }
 
-cmd_release() {
+cmd_alloc() {
+  local repo="$1"
+  shift
+  local pool
+  pool="$(pool_dir "$repo")"
+  mkdir -p "$pool"
+
+  local base_ref
+  base_ref="$(default_base_ref "$repo")"
+  local base_overridden=0
+  local branch=""
+
+  while (($#)); do
+    case "$1" in
+      --base)
+        shift
+        [[ $# -gt 0 ]] || die "--base requires a value"
+        base_ref="$1"
+        base_overridden=1
+        ;;
+      *)
+        if [[ -z "$branch" ]]; then
+          branch="$1"
+        else
+          die "Unexpected argument: $1"
+        fi
+        ;;
+    esac
+    shift
+  done
+
+  if [[ -z "$branch" ]]; then
+    if [[ -t 0 ]]; then
+      read -r -p "Branch name: " branch
+    fi
+  fi
+
+  alloc_branch "$repo" "$pool" "$branch" "$base_ref" "$base_overridden" ""
+}
+
+cmd_realloc() {
+  local repo="$1"
+  shift
+  local pool
+  pool="$(pool_dir "$repo")"
+  mkdir -p "$pool"
+
+  local base_ref
+  base_ref="$(default_base_ref "$repo")"
+  local base_overridden=0
+  local force=0
+  local yes=0
+  local query=""
+  local branch=""
+
+  while (($#)); do
+    case "$1" in
+      --base)
+        shift
+        [[ $# -gt 0 ]] || die "--base requires a value"
+        base_ref="$1"
+        base_overridden=1
+        ;;
+      --force) force=1 ;;
+      --yes|-y) yes=1 ;;
+      *)
+        if [[ -z "$query" ]]; then
+          query="$1"
+        elif [[ -z "$branch" ]]; then
+          branch="$1"
+        else
+          die "Unexpected argument: $1"
+        fi
+        ;;
+    esac
+    shift
+  done
+
+  [[ -n "$query" ]] || die "Usage: wt realloc <worktree-query> [branch] [--base REF] [--force] [--yes]"
+  if [[ -z "$branch" ]]; then
+    if [[ -t 0 ]]; then
+      read -r -p "Branch name: " branch
+    fi
+  fi
+  [[ -n "$branch" ]] || die "Branch name is required. Usage: wt realloc <worktree-query> <branch>"
+
+  info "Realloc requested for worktree: $query"
+  info "Target branch: $branch"
+  info "Pool: $pool"
+  info "Git hooks: $(hook_strategy "$repo")"
+
+  if [[ "$query" == "main" || "$query" == "$repo" ]]; then
+    die "'main' is the primary checkout and cannot be reallocated."
+  fi
+
+  local target
+  target="$(pick_worktree_target "$repo" "$query")" || die "No worktree matches '$query'"
+  [[ "$target" != "$repo" ]] || die "'main' is the primary checkout and cannot be reallocated."
+  if is_free_slot_path "$target"; then
+    die "Worktree is already free. Use wt alloc <branch> instead."
+  fi
+  info "Resolved worktree: $target"
+
+  info "Checking worktree status..."
+  if [[ -n "$(git -C "$target" status --porcelain)" && "$force" -ne 1 ]]; then
+    die "Worktree has uncommitted changes. Commit/stash first, or use --force."
+  fi
+  if [[ -n "$(git -C "$target" status --porcelain)" ]]; then
+    info "Worktree is dirty; --force was provided."
+  else
+    info "Worktree is clean."
+  fi
+
+  if ((yes == 0)); then
+    local answer
+    if [[ -t 0 ]]; then
+      read -r -p "Realloc $(basename "$target") ($target) to '$branch'? This detaches the current branch, moves/renames this worktree into the free pool, then renames it to the target branch. [y/N] " answer
+      [[ "$answer" == [yY] || "$answer" == [yY][eE][sS] ]] || {
+        info "Realloc cancelled."
+        return 0
+      }
+    else
+      die "Realloc requires confirmation. Re-run with --yes if intentional."
+    fi
+  fi
+
+  if ! is_detached "$target"; then
+    info "Detaching HEAD before reallocating this worktree."
+    git_wt "$repo" -C "$target" checkout --quiet --detach
+  else
+    info "HEAD is already detached."
+  fi
+
+  local slot
+  slot="$(next_free_slot_path "$pool")"
+  info "Moving selected worktree to temporary free slot: $slot"
+  git_wt "$repo" -C "$repo" worktree move "$target" "$slot"
+
+  alloc_branch "$repo" "$pool" "$branch" "$base_ref" "$base_overridden" "$slot"
+}
+
+cmd_free() {
   local repo="$1"
   shift
   local pool
@@ -822,8 +973,8 @@ cmd_release() {
     esac
     shift
   done
-  [[ -n "$query" ]] || die "Usage: wt release <branch|worktree-query> [--force]"
-  info "Release requested for: $query"
+  [[ -n "$query" ]] || die "Usage: wt free <branch|worktree-query> [--force]"
+  info "Free requested for: $query"
   info "Pool: $pool"
   info "Git hooks: $(hook_strategy "$repo")"
 
@@ -853,7 +1004,7 @@ cmd_release() {
   fi
 
   if is_free_slot_path "$target"; then
-    info "Already released: $(basename "$target")"
+    info "Already free: $(basename "$target")"
     info "Path: $target"
     return 0
   fi
@@ -865,7 +1016,7 @@ cmd_release() {
     git_wt "$repo" -C "$repo" worktree move "$target" "$free_path"
   fi
 
-  info "Released to: $(basename "$free_path")"
+  info "Freed to: $(basename "$free_path")"
   info "Path: $free_path"
 }
 
@@ -933,11 +1084,11 @@ cmd_remove() {
 cmd_update() {
   local tmp
   tmp="$(mktemp -t wt-install.XXXXXX)"
-  trap 'rm -f "$tmp"' RETURN
 
   info "Downloading installer from: $WT_REPO_RAW_BASE/install.sh"
   download_file "$WT_REPO_RAW_BASE/install.sh" "$tmp"
   bash "$tmp"
+  rm -f "$tmp"
 }
 
 cmd_help() {
@@ -948,16 +1099,18 @@ Usage:
   wt (interactive picker)
   wt grow [--size N] [--base REF] [--warm]
   wt alloc [branch] [--base REF]
+  wt realloc <query> [branch] [--base REF] [--force] [--yes]
   wt go <query> [--print-path]
   wt list
-  wt release <query> [--force]
+  wt free <query> [--force]
   wt remove <query> [--force] [--yes]
   wt update
 
 Behavior:
   - grow: adds new detached free-N slots to the reusable pool.
   - alloc: uses a free worktree for a new/existing branch (new starts at remote default).
-  - release: detaches HEAD and renames worktree to smallest available free-N.
+  - realloc: frees a selected worktree, then allocates a branch into that same slot.
+  - free: detaches HEAD and renames worktree to smallest available free-N.
   - remove: deletes a pool worktree after confirmation; main is protected.
   - update: downloads the latest installer from GitHub and reinstalls wt.
   - go: prints a path normally; with shell integration, changes directory.
@@ -982,9 +1135,10 @@ main() {
     interactive) cmd_interactive "$repo" "$@" ;;
     grow) cmd_grow "$repo" "$@" ;;
     alloc) cmd_alloc "$repo" "$@" ;;
+    realloc) cmd_realloc "$repo" "$@" ;;
     go) cmd_go "$repo" "$@" ;;
     list) cmd_list "$repo" "$@" ;;
-    release) cmd_release "$repo" "$@" ;;
+    free) cmd_free "$repo" "$@" ;;
     remove) cmd_remove "$repo" "$@" ;;
     *) die "Unknown command: $cmd (run: wt help)" ;;
   esac

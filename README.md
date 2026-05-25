@@ -9,7 +9,8 @@ It gives you:
 - `wt go <query>` - `cd` into a worktree by name, branch, or path match
 - `wt grow` - add reusable `free-N` worktrees to the pool
 - `wt alloc <branch>` - allocate or checkout a branch in a free worktree
-- `wt release <query>` - detach a worktree and return it to the free pool
+- `wt realloc <query> <branch>` - free a selected worktree and allocate a branch into it
+- `wt free <query>` - detach a worktree and return it to the free pool
 - `wt remove <query>` - delete a worktree from the pool
 - `wt update` - reinstall the latest version from GitHub
 
@@ -51,6 +52,10 @@ Update an existing install:
 ```bash
 wt update
 ```
+
+When `wt update` is run through the shell integration, it reloads the updated
+wrapper in the current shell. If you run the binary directly, reload manually
+with `source ~/.zshrc`.
 
 Or without relying on the installed command:
 
@@ -140,19 +145,28 @@ Checkout an existing branch into a free slot:
 wt alloc existing-branch
 ```
 
-Release a worktree back into the pool:
+Reallocate an existing worktree to another branch:
 
 ```bash
-wt release my-feature
+wt realloc my-current-worktree next-branch
 ```
 
-`release` can also take the exact path of any registered Git worktree, even if
-that worktree was not allocated by `wt`.
+`realloc` asks for confirmation because it detaches the selected worktree,
+moves/renames it into the free pool, then renames it to the target branch.
 
-Force release a dirty worktree:
+Free a worktree back into the pool:
 
 ```bash
-wt release my-feature --force
+wt free my-feature
+```
+
+`free` can also take the exact path of any registered Git worktree, even if
+that worktree was not allocated by `wt`.
+
+Force-free a dirty worktree:
+
+```bash
+wt free my-feature --force
 ```
 
 Remove a worktree:
@@ -181,26 +195,30 @@ NAME  STATUS  LAST MODIFIED  BRANCH
 The main picker also includes:
 
 ```text
-Add new worktree  action  allocate next free-N
+Add new worktree                         create next free-N
 ```
 
 After selecting an existing worktree, choose:
 
 ```text
 go                  cd into this worktree
-release             detach and return this worktree to the free pool
+free                detach and return this worktree to the free pool
+realloc             free this worktree and allocate another branch into it
 remove              delete this worktree from the pool
-alloc              allocate or checkout a branch in this free worktree
+alloc               allocate or checkout a branch in this free worktree
 ```
 
 `remove` is not shown for `main` and asks for confirmation.
+`free` and `realloc` are only shown for non-free worktrees.
 `alloc` is only shown for `free-N` worktrees.
 `Add new worktree` runs `wt grow`.
-`Esc` exits the picker; `Backspace` returns from the action picker to the worktree picker.
+`Esc` exits the picker; `Backspace` returns from the action picker to the
+worktree picker.
 
 ## Notes
 
-The main checkout is treated as the anchor checkout. It appears as `main` in `wt list` and `wt go main`, but it is not released into the reusable pool.
+The main checkout is treated as the anchor checkout. It appears as `main` in
+`wt list` and `wt go main`, but it is not returned to the reusable pool.
 
 `wt alloc` refreshes from Git directly; it does not rely on local aliases.
 `wt` prints each implicit step it runs: fetch/base selection, slot selection,
