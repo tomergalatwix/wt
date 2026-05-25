@@ -205,9 +205,11 @@ The main checkout is treated as the anchor checkout. It appears as `main` in `wt
 `wt` prints each implicit step it runs: fetch/base selection, slot selection,
 worktree moves, checkout/rebase, and dependency installation decisions.
 
-Git hooks are disabled for `wt`-managed Git operations with `LEFTHOOK=0` and
-`core.hooksPath=/dev/null`. This avoids repo hook prerequisites, such as a
-missing `lefthook`, blocking worktree pool management.
+For Git hooks, `wt` first tries to reuse Lefthook from the main checkout
+(`node_modules/.bin/lefthook` or the package binary). If it cannot find one, it
+falls back to disabling hooks for `wt`-managed Git operations with `LEFTHOOK=0`
+and `core.hooksPath=/dev/null`, so missing hook prerequisites do not block
+worktree pool management.
 
 For new branches, it fetches the remote default branch, creates the branch from that fresh ref, and jumps your shell into the new worktree.
 

@@ -13,8 +13,40 @@ info() {
   echo "$*"
 }
 
-git_no_hooks() {
-  LEFTHOOK=0 git -c core.hooksPath=/dev/null "$@"
+main_lefthook_bin() {
+  local repo="$1"
+  local candidate
+  for candidate in \
+    "$repo/node_modules/.bin/lefthook" \
+    "$repo/node_modules/lefthook/bin/index.js" \
+    "$repo/node_modules/lefthook-$(uname | tr '[:upper:]' '[:lower:]')-$(uname -m | sed 's/aarch64/arm64/;s/x86_64/x64/')/bin/lefthook"; do
+    [[ -x "$candidate" || -f "$candidate" ]] && {
+      printf '%s\n' "$candidate"
+      return 0
+    }
+  done
+  return 1
+}
+
+git_wt() {
+  local repo="$1"
+  shift
+  local lefthook_bin
+  if lefthook_bin="$(main_lefthook_bin "$repo")"; then
+    LEFTHOOK_BIN="$lefthook_bin" git "$@"
+  else
+    LEFTHOOK=0 git -c core.hooksPath=/dev/null "$@"
+  fi
+}
+
+hook_strategy() {
+  local repo="$1"
+  local lefthook_bin
+  if lefthook_bin="$(main_lefthook_bin "$repo")"; then
+    printf 'using main checkout lefthook: %s\n' "$lefthook_bin"
+  else
+    printf 'disabled; no lefthook found in main checkout\n'
+  fi
 }
 
 repo_root() {
@@ -64,7 +96,7 @@ fresh_default_ref() {
     fi
 
     if [[ -n "$branch" ]] &&
-      git_no_hooks -C "$repo" fetch --prune origin "$branch" >/dev/null 2>&1 &&
+      git_wt "$repo" -C "$repo" fetch --prune origin "$branch" >/dev/null 2>&1 &&
       git -C "$repo" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
       echo "origin/$branch"
       return 0
@@ -227,7 +259,7 @@ all_pool_worktrees() {
 
 all_worktrees() {
   local repo="$1"
-  git_no_hooks -C "$repo" worktree list --porcelain |
+  git_wt "$repo" -C "$repo" worktree list --porcelain |
     awk '/^worktree /{print substr($0,10)}' |
     sort
 }
@@ -343,13 +375,13 @@ cmd_grow() {
   info "Growing worktree pool in: $pool"
   info "Base ref: $base_ref"
   info "Adding: $size"
-  info "Git hooks: disabled for wt-managed git operations"
+  info "Git hooks: $(hook_strategy "$repo")"
 
   local i slot
   for ((i = 1; i <= size; i++)); do
     slot="$(next_free_slot_path "$pool")"
     info "  - $(basename "$slot"): creating detached worktree at $slot"
-    git_no_hooks -C "$repo" worktree add -q --detach "$slot" "$base_ref"
+    git_wt "$repo" -C "$repo" worktree add -q --detach "$slot" "$base_ref"
 
     if ((warm)); then
       local install_cmd lockfile
@@ -646,7 +678,7 @@ cmd_create() {
   [[ -n "$branch" ]] || die "Branch name is required. Usage: wt create <branch>"
   info "Create requested for branch: $branch"
   info "Pool: $(pool_dir "$repo")"
-  info "Git hooks: disabled for wt-managed git operations"
+  info "Git hooks: $(hook_strategy "$repo")"
 
   local branch_exists=0
   if git -C "$repo" show-ref --verify --quiet "refs/heads/$branch"; then
@@ -696,19 +728,19 @@ cmd_create() {
 
   info "Using free slot: $(basename "$slot")"
   info "Moving worktree: $slot -> $target"
-  git_no_hooks -C "$repo" worktree move "$slot" "$target"
+  git_wt "$repo" -C "$repo" worktree move "$slot" "$target"
 
   if ((branch_exists == 1)); then
     info "Checking out existing branch: $branch"
-    git_no_hooks -C "$target" checkout --quiet "$branch"
+    git_wt "$repo" -C "$target" checkout --quiet "$branch"
     info "Rebasing on $rebase_ref..."
     (
       cd "$target"
-      git_no_hooks rebase "$rebase_ref" --autostash
+      git_wt "$repo" rebase "$rebase_ref" --autostash
     )
   else
     info "Creating branch $branch from $base_ref"
-    git_no_hooks -C "$target" checkout --quiet -b "$branch" "$base_ref"
+    git_wt "$repo" -C "$target" checkout --quiet -b "$branch" "$base_ref"
   fi
 
   local install_cmd lockfile
@@ -766,7 +798,7 @@ cmd_release() {
   [[ -n "$query" ]] || die "Usage: wt release <branch|worktree-query> [--force]"
   info "Release requested for: $query"
   info "Pool: $pool"
-  info "Git hooks: disabled for wt-managed git operations"
+  info "Git hooks: $(hook_strategy "$repo")"
 
   if [[ "$query" == "main" || "$query" == "$repo" ]]; then
     die "'main' is the primary checkout and is not part of the recyclable pool."
@@ -788,7 +820,7 @@ cmd_release() {
 
   if ! is_detached "$target"; then
     info "Detaching HEAD before returning worktree to pool."
-    git_no_hooks -C "$target" checkout --quiet --detach
+    git_wt "$repo" -C "$target" checkout --quiet --detach
   else
     info "HEAD is already detached."
   fi
@@ -803,7 +835,7 @@ cmd_release() {
   free_path="$(next_free_slot_path "$pool")"
   if [[ "$target" != "$free_path" ]]; then
     info "Moving worktree to free slot: $free_path"
-    git_no_hooks -C "$repo" worktree move "$target" "$free_path"
+    git_wt "$repo" -C "$repo" worktree move "$target" "$free_path"
   fi
 
   info "Released to: $(basename "$free_path")"
@@ -827,7 +859,7 @@ cmd_remove() {
   done
   [[ -n "$query" ]] || die "Usage: wt remove <branch|worktree-query> [--force] [--yes]"
   info "Remove requested for: $query"
-  info "Git hooks: disabled for wt-managed git operations"
+  info "Git hooks: $(hook_strategy "$repo")"
 
   if [[ "$query" == "main" || "$query" == "$repo" ]]; then
     die "'main' is the primary checkout and cannot be removed by wt."
@@ -862,10 +894,10 @@ cmd_remove() {
 
   if ((force)); then
     info "Removing worktree with --force."
-    git_no_hooks -C "$repo" worktree remove --force "$target"
+    git_wt "$repo" -C "$repo" worktree remove --force "$target"
   else
     info "Removing worktree."
-    git_no_hooks -C "$repo" worktree remove "$target"
+    git_wt "$repo" -C "$repo" worktree remove "$target"
   fi
   info "Removed: $(basename "$target")"
   info "Path: $target"
