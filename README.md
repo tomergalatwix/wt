@@ -8,7 +8,7 @@ It gives you:
 - `wt list` - a compact worktree table
 - `wt go <query>` - `cd` into a worktree by name, branch, or path match
 - `wt grow` - add reusable `free-N` worktrees to the pool
-- `wt create <branch>` - create or checkout a branch in a free worktree
+- `wt alloc <branch>` - allocate or checkout a branch in a free worktree
 - `wt release <query>` - detach a worktree and return it to the free pool
 - `wt remove <query>` - delete a worktree from the pool
 - `wt update` - reinstall the latest version from GitHub
@@ -128,16 +128,16 @@ Jump back like `cd -`:
 wt go -
 ```
 
-Create a branch from the fresh remote default branch:
+Alloc a branch from the fresh remote default branch:
 
 ```bash
-wt create my-feature
+wt alloc my-feature
 ```
 
 Checkout an existing branch into a free slot:
 
 ```bash
-wt create existing-branch
+wt alloc existing-branch
 ```
 
 Release a worktree back into the pool:
@@ -147,7 +147,7 @@ wt release my-feature
 ```
 
 `release` can also take the exact path of any registered Git worktree, even if
-that worktree was not created by `wt`.
+that worktree was not allocated by `wt`.
 
 Force release a dirty worktree:
 
@@ -181,7 +181,7 @@ NAME  STATUS  LAST MODIFIED  BRANCH
 The main picker also includes:
 
 ```text
-Add new worktree  action  create next free-N
+Add new worktree  action  allocate next free-N
 ```
 
 After selecting an existing worktree, choose:
@@ -190,18 +190,19 @@ After selecting an existing worktree, choose:
 go                  cd into this worktree
 release             detach and return this worktree to the free pool
 remove              delete this worktree from the pool
-create              create or checkout a branch in this free worktree
+alloc              allocate or checkout a branch in this free worktree
 ```
 
 `remove` is not shown for `main` and asks for confirmation.
-`create` is only shown for `free-N` worktrees.
+`alloc` is only shown for `free-N` worktrees.
 `Add new worktree` runs `wt grow`.
+`Esc` exits the picker; `Backspace` returns from the action picker to the worktree picker.
 
 ## Notes
 
 The main checkout is treated as the anchor checkout. It appears as `main` in `wt list` and `wt go main`, but it is not released into the reusable pool.
 
-`wt create` refreshes from Git directly; it does not rely on local aliases.
+`wt alloc` refreshes from Git directly; it does not rely on local aliases.
 `wt` prints each implicit step it runs: fetch/base selection, slot selection,
 worktree moves, checkout/rebase, and dependency installation decisions.
 
@@ -220,7 +221,7 @@ git fetch
 git rebase <remote-default-branch> --autostash
 ```
 
-Pass `--base <ref>` to create a new branch from a different initial base.
+Pass `--base <ref>` to allocate a new branch from a different initial base.
 
 Dependency installation is best-effort. If `wt` finds `yarn.lock`,
 `pnpm-lock.yaml`, or `package-lock.json`, it uses the matching package manager

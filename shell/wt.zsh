@@ -34,17 +34,17 @@ wt() {
         fi
         return $?
         ;;
-      __WT_CREATE__)
-        local _wt_create_output _wt_create_last _wt_create_path
-        _wt_create_output="$(WT_SHELL_INTEGRATION=1 command wt create)" || return $?
-        _wt_create_last="${_wt_create_output##*$'\n'}"
-        if [[ "$_wt_create_last" == __WT_CREATED__* ]]; then
-          _wt_create_path="${_wt_create_last#*$'\t'}"
-          print -r -- "${_wt_create_output%$'\n'"$_wt_create_last"}"
-          cd "$_wt_create_path" || return $?
+      __WT_ALLOC__)
+        local _wt_alloc_output _wt_alloc_last _wt_alloc_path
+        _wt_alloc_output="$(WT_SHELL_INTEGRATION=1 command wt alloc)" || return $?
+        _wt_alloc_last="${_wt_alloc_output##*$'\n'}"
+        if [[ "$_wt_alloc_last" == __WT_ALLOCATED__* ]]; then
+          _wt_alloc_path="${_wt_alloc_last#*$'\t'}"
+          print -r -- "${_wt_alloc_output%$'\n'"$_wt_alloc_last"}"
+          cd "$_wt_alloc_path" || return $?
           return 0
         fi
-        print -r -- "$_wt_create_output"
+        print -r -- "$_wt_alloc_output"
         return 0
         ;;
       __WT_GROW__)
@@ -58,17 +58,17 @@ wt() {
     esac
   fi
 
-  if [[ "${1:-}" == "create" ]]; then
-    local _wt_create_output _wt_create_last _wt_create_path
-    _wt_create_output="$(WT_SHELL_INTEGRATION=1 command wt "$@")" || return $?
-    _wt_create_last="${_wt_create_output##*$'\n'}"
-    if [[ "$_wt_create_last" == __WT_CREATED__* ]]; then
-      _wt_create_path="${_wt_create_last#*$'\t'}"
-      print -r -- "${_wt_create_output%$'\n'"$_wt_create_last"}"
-      cd "$_wt_create_path" || return $?
+  if [[ "${1:-}" == "alloc" ]]; then
+    local _wt_alloc_output _wt_alloc_last _wt_alloc_path
+    _wt_alloc_output="$(WT_SHELL_INTEGRATION=1 command wt "$@")" || return $?
+    _wt_alloc_last="${_wt_alloc_output##*$'\n'}"
+    if [[ "$_wt_alloc_last" == __WT_ALLOCATED__* ]]; then
+      _wt_alloc_path="${_wt_alloc_last#*$'\t'}"
+      print -r -- "${_wt_alloc_output%$'\n'"$_wt_alloc_last"}"
+      cd "$_wt_alloc_path" || return $?
       return 0
     fi
-    print -r -- "$_wt_create_output"
+    print -r -- "$_wt_alloc_output"
     return 0
   fi
 

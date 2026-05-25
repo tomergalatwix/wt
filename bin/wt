@@ -507,81 +507,107 @@ cmd_interactive() {
     fi
   done
 
-  local selection
-  selection="$(
-    {
-      printf "%-${name_w}s  %-7s  %-16s  %-${branch_w}s\t%s\t%s\n" "NAME" "STATUS" "LAST MODIFIED" "BRANCH" "__NAME__" "__PATH__"
-      printf '%s\n' "${rows[@]}" |
-        sort -t'|' -k1,1nr |
-        while IFS='|' read -r _mtime _name _status _mtime_h _branch _path; do
-          printf "%-${name_w}s  %-7s  %-16s  %-${branch_w}s\t%s\t%s\n" "$_name" "$_status" "$_mtime_h" "$_branch" "$_name" "$_path"
-        done
-      printf "%-${name_w}s  %-7s  %-16s  %-${branch_w}s\t%s\t%s\n" "Add new worktree" "" "" "" "__WT_GROW__" "__WT_GROW__"
-    } |
-      "$fzf_cmd" \
-        --height=80% \
-        --reverse \
-        --header-lines=1 \
-        --delimiter=$'\t' \
-        --with-nth=1 \
-        --prompt='Choose worktree> '
-  )" || return 0
+  while :; do
+    local selection_raw selection_key selection
+    selection_raw="$(
+      {
+        printf "%-${name_w}s  %-7s  %-16s  %-${branch_w}s\t%s\t%s\n" "NAME" "STATUS" "LAST MODIFIED" "BRANCH" "__NAME__" "__PATH__"
+        printf '%s\n' "${rows[@]}" |
+          sort -t'|' -k1,1nr |
+          while IFS='|' read -r _mtime _name _status _mtime_h _branch _path; do
+            printf "%-${name_w}s  %-7s  %-16s  %-${branch_w}s\t%s\t%s\n" "$_name" "$_status" "$_mtime_h" "$_branch" "$_name" "$_path"
+          done
+        printf "%-${name_w}s  %-7s  %-16s  %-${branch_w}s\t%s\t%s\n" "Add new worktree" "" "" "" "__WT_GROW__" "__WT_GROW__"
+      } |
+        "$fzf_cmd" \
+          --height=80% \
+          --reverse \
+          --expect=backspace \
+          --footer='Esc: exit  |  Backspace: exit' \
+          --header-lines=1 \
+          --delimiter=$'\t' \
+          --with-nth=1 \
+          --prompt='Choose worktree> '
+    )" || return 0
 
-  [[ -n "$selection" ]] || return 0
-
-  local name path action action_selection actions
-  name="$(awk -F $'\t' '{ print $2 }' <<<"$selection")"
-  path="$(awk -F $'\t' '{ print $3 }' <<<"$selection")"
-  [[ -n "$path" ]] || die "Could not resolve selected worktree path."
-  if [[ "$path" == "__WT_GROW__" ]]; then
-    printf '__WT_GROW__\n'
-    return 0
-  fi
-
-  actions="$(
-    printf '%s\t%-18s    \033[2m%s\033[0m\n' "go" "go" "cd into this worktree"
-    printf '%s\t%-18s    \033[2m%s\033[0m\n' "release" "release" "detach and return this worktree to the free pool"
-    if [[ "$path" != "$repo" ]]; then
-      printf '%s\t%-18s    \033[2m%s\033[0m\n' "remove" "remove" "delete this worktree from the pool"
-    fi
-    if is_free_slot_path "$path"; then
-      printf '%s\t%-18s    \033[2m%s\033[0m\n' "create" "create" "create or checkout a branch in this free worktree"
-    fi
-  )"
-
-  action_selection="$(
-    printf '%s\n' "$actions" |
-      "$fzf_cmd" \
-        --height=10 \
-        --reverse \
-        --ansi \
-        --header="Chosen worktree: $name"$'\n'"Choose action:" \
-        --delimiter=$'\t' \
-        --with-nth=2 \
-        --prompt='> '
-  )" || return 0
-  action="$(awk -F $'\t' '{ print $1 }' <<<"$action_selection")"
-
-  case "$action" in
-    go)
-      printf '__WT_GO__\t%s\n' "$path"
-      ;;
-    release)
-      printf '__WT_RELEASE__\t%s\t%s\n' "$name" "$path"
-      ;;
-    remove)
-      printf '__WT_REMOVE__\t%s\t%s\n' "$name" "$path"
-      ;;
-    create)
-      printf '__WT_CREATE__\n'
-      ;;
-    "")
+    selection_key=""
+    selection="$selection_raw"
+    if [[ "$selection_raw" == "backspace" ]]; then
       return 0
-      ;;
-    *)
-      die "Unknown action: $action"
-      ;;
-  esac
+    elif [[ "$selection_raw" == *$'\n'* ]]; then
+      selection_key="${selection_raw%%$'\n'*}"
+      selection="${selection_raw#*$'\n'}"
+    fi
+    [[ "$selection_key" == "backspace" ]] && return 0
+    [[ -n "$selection" ]] || return 0
+
+    local name path action action_raw action_key action_selection actions
+    name="$(awk -F $'\t' '{ print $2 }' <<<"$selection")"
+    path="$(awk -F $'\t' '{ print $3 }' <<<"$selection")"
+    [[ -n "$path" ]] || die "Could not resolve selected worktree path."
+    if [[ "$path" == "__WT_GROW__" ]]; then
+      printf '__WT_GROW__\n'
+      return 0
+    fi
+
+    actions="$(
+      printf '%s\t%-18s    \033[2m%s\033[0m\n' "go" "go" "cd into this worktree"
+      printf '%s\t%-18s    \033[2m%s\033[0m\n' "release" "release" "detach and return this worktree to the free pool"
+      if [[ "$path" != "$repo" ]]; then
+        printf '%s\t%-18s    \033[2m%s\033[0m\n' "remove" "remove" "delete this worktree from the pool"
+      fi
+      if is_free_slot_path "$path"; then
+        printf '%s\t%-18s    \033[2m%s\033[0m\n' "alloc" "alloc" "allocate a new/existing branch in this free worktree"
+      fi
+    )"
+
+    action_raw="$(
+      printf '%s\n' "$actions" |
+        "$fzf_cmd" \
+          --height=10 \
+          --reverse \
+          --ansi \
+          --expect=backspace \
+          --footer='Esc: exit  |  Backspace: back' \
+          --header="Chosen worktree: $name"$'\n'"Choose action:" \
+          --delimiter=$'\t' \
+          --with-nth=2 \
+          --prompt='> '
+    )" || return 0
+
+    action_key=""
+    action_selection="$action_raw"
+    if [[ "$action_raw" == "backspace" ]]; then
+      continue
+    elif [[ "$action_raw" == *$'\n'* ]]; then
+      action_key="${action_raw%%$'\n'*}"
+      action_selection="${action_raw#*$'\n'}"
+    fi
+    [[ "$action_key" == "backspace" ]] && continue
+    action="$(awk -F $'\t' '{ print $1 }' <<<"$action_selection")"
+
+    case "$action" in
+      go)
+        printf '__WT_GO__\t%s\n' "$path"
+        ;;
+      release)
+        printf '__WT_RELEASE__\t%s\t%s\n' "$name" "$path"
+        ;;
+      remove)
+        printf '__WT_REMOVE__\t%s\t%s\n' "$name" "$path"
+        ;;
+      alloc)
+        printf '__WT_ALLOC__\n'
+        ;;
+      "")
+        return 0
+        ;;
+      *)
+        die "Unknown action: $action"
+        ;;
+    esac
+    return 0
+  done
 }
 
 cmd_go() {
@@ -640,7 +666,7 @@ cmd_go() {
   return 1
 }
 
-cmd_create() {
+cmd_alloc() {
   local repo="$1"
   shift
   local pool
@@ -676,8 +702,8 @@ cmd_create() {
       read -r -p "Branch name: " branch
     fi
   fi
-  [[ -n "$branch" ]] || die "Branch name is required. Usage: wt create <branch>"
-  info "Create requested for branch: $branch"
+  [[ -n "$branch" ]] || die "Branch name is required. Usage: wt alloc <branch>"
+  info "Alloc requested for branch: $branch"
   info "Pool: $(pool_dir "$repo")"
   info "Git hooks: $(hook_strategy "$repo")"
 
@@ -740,7 +766,7 @@ cmd_create() {
       git_wt "$repo" rebase "$rebase_ref" --autostash
     )
   else
-    info "Creating branch $branch from $base_ref"
+    info "Allocating branch $branch from $base_ref"
     git_wt "$repo" -C "$target" checkout --quiet -b "$branch" "$base_ref"
   fi
 
@@ -771,12 +797,12 @@ cmd_create() {
   if ((branch_exists == 1)); then
     info "Checked out: $branch"
   else
-    info "Created: $branch"
+    info "Allocated: $branch"
     info "Base:    $base_ref"
   fi
   info "Path:    $target"
   if [[ "${WT_SHELL_INTEGRATION:-0}" == "1" ]]; then
-    printf '__WT_CREATED__\t%s\n' "$target"
+    printf '__WT_ALLOCATED__\t%s\n' "$target"
   fi
 }
 
@@ -921,7 +947,7 @@ wt - recycled git worktree pool helper
 Usage:
   wt (interactive picker)
   wt grow [--size N] [--base REF] [--warm]
-  wt create [branch] [--base REF]
+  wt alloc [branch] [--base REF]
   wt go <query> [--print-path]
   wt list
   wt release <query> [--force]
@@ -930,7 +956,7 @@ Usage:
 
 Behavior:
   - grow: adds new detached free-N slots to the reusable pool.
-  - create: uses a free worktree for a new/existing branch (new starts at remote default).
+  - alloc: uses a free worktree for a new/existing branch (new starts at remote default).
   - release: detaches HEAD and renames worktree to smallest available free-N.
   - remove: deletes a pool worktree after confirmation; main is protected.
   - update: downloads the latest installer from GitHub and reinstalls wt.
@@ -955,7 +981,7 @@ main() {
   case "$cmd" in
     interactive) cmd_interactive "$repo" "$@" ;;
     grow) cmd_grow "$repo" "$@" ;;
-    create) cmd_create "$repo" "$@" ;;
+    alloc) cmd_alloc "$repo" "$@" ;;
     go) cmd_go "$repo" "$@" ;;
     list) cmd_list "$repo" "$@" ;;
     release) cmd_release "$repo" "$@" ;;
