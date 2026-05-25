@@ -555,9 +555,10 @@ cmd_interactive() {
         --height=10 \
         --reverse \
         --ansi \
+        --header="Chosen worktree: $name"$'\n'"Choose action:" \
         --delimiter=$'\t' \
         --with-nth=2 \
-        --prompt='Select action> '
+        --prompt='> '
   )" || return 0
   action="$(awk -F $'\t' '{ print $1 }' <<<"$action_selection")"
 
