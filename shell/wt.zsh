@@ -27,6 +27,37 @@ __wt_run_and_cd_alloc() {
   return 0
 }
 
+__wt_run_and_cd_freed() {
+  local _wt_marker_file _wt_marker _wt_line _wt_status _wt_payload _wt_old_path _wt_new_path _wt_start_pwd _wt_suffix
+  _wt_marker_file="$(mktemp -t wt-free.XXXXXX)" || return $?
+  _wt_start_pwd="$(pwd -P)"
+
+  WT_SHELL_INTEGRATION=1 command wt "$@" | while IFS= read -r _wt_line; do
+    if [[ "$_wt_line" == __WT_FREED__* ]]; then
+      print -r -- "$_wt_line" >| "$_wt_marker_file"
+    else
+      print -r -- "$_wt_line"
+    fi
+  done
+  _wt_status=${pipestatus[1]}
+
+  _wt_marker="$(cat "$_wt_marker_file")"
+  rm -f "$_wt_marker_file"
+  if [[ "$_wt_status" -ne 0 ]]; then
+    return "$_wt_status"
+  fi
+  if [[ "$_wt_marker" == __WT_FREED__* ]]; then
+    _wt_payload="${_wt_marker#*$'\t'}"
+    _wt_old_path="${_wt_payload%%$'\t'*}"
+    _wt_new_path="${_wt_payload#*$'\t'}"
+    if [[ "$_wt_start_pwd" == "$_wt_old_path" || "$_wt_start_pwd" == "$_wt_old_path"/* ]]; then
+      _wt_suffix="${_wt_start_pwd#"$_wt_old_path"}"
+      cd "${_wt_new_path}${_wt_suffix}" 2>/dev/null || cd "$_wt_new_path" || return $?
+    fi
+  fi
+  return 0
+}
+
 wt() {
   if [[ $# -eq 0 ]]; then
     local _wt_result _wt_action _wt_payload _wt_name _wt_path _wt_answer
@@ -46,7 +77,7 @@ wt() {
         _wt_path="${_wt_payload#*$'\t'}"
         read -r "?Free ${_wt_name} (${_wt_path})? [y/N] " _wt_answer
         if [[ "$_wt_answer" == [yY] || "$_wt_answer" == [yY][eE][sS] ]]; then
-          command wt free "$_wt_path"
+          __wt_run_and_cd_freed free "$_wt_path"
         fi
         return $?
         ;;
@@ -94,6 +125,11 @@ wt() {
 
   if [[ "${1:-}" == "realloc" ]]; then
     __wt_run_and_cd_alloc "$@"
+    return $?
+  fi
+
+  if [[ "${1:-}" == "free" ]]; then
+    __wt_run_and_cd_freed "$@"
     return $?
   fi
 
