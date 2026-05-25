@@ -5,12 +5,94 @@ WT_FREE_PREFIX="${WT_FREE_PREFIX:-free-}"
 WT_REPO_RAW_BASE="${WT_REPO_RAW_BASE:-https://raw.githubusercontent.com/tomergalatwix/wt/master}"
 
 die() {
-  echo "Error: $*" >&2
+  if color_enabled; then
+    printf '\033[31mError: %s\033[0m\n' "$*" >&2
+  else
+    printf 'Error: %s\n' "$*" >&2
+  fi
   exit 1
 }
 
+color_enabled() {
+  [[ "${WT_COLOR:-1}" != "0" && -z "${NO_COLOR:-}" ]]
+}
+
 info() {
-  echo "$*"
+  if color_enabled; then
+    printf '\033[36m%s\033[0m\n' "$*"
+  else
+    printf '%s\n' "$*"
+  fi
+}
+
+phase() {
+  if color_enabled; then
+    printf '\n\033[1;36m%s\033[0m\n' "$*"
+  else
+    printf '\n%s\n' "$*"
+  fi
+}
+
+output_header() {
+  if color_enabled; then
+    printf '\033[2;36mOutput:\033[0m\n'
+  else
+    printf 'Output:\n'
+  fi
+}
+
+show_truncated_output() {
+  local file="$1"
+  local lines
+  lines="$(wc -l <"$file" | tr -d ' ')"
+
+  output_header
+  if [[ ! -s "$file" ]]; then
+    printf '(none)\n'
+  elif ((lines > 3)); then
+    printf '...\n'
+    tail -n 3 "$file"
+  else
+    cat "$file"
+  fi
+  printf '\n'
+}
+
+run_logged() {
+  local label="$1"
+  shift
+  local tmp status
+  tmp="$(mktemp -t wt-output.XXXXXX)" || return $?
+
+  phase "$label"
+  if "$@" >"$tmp" 2>&1; then
+    status=0
+  else
+    status=$?
+  fi
+
+  show_truncated_output "$tmp"
+  rm -f "$tmp"
+  return "$status"
+}
+
+run_logged_in_dir() {
+  local label="$1"
+  local dir="$2"
+  shift 2
+  local tmp status
+  tmp="$(mktemp -t wt-output.XXXXXX)" || return $?
+
+  phase "$label"
+  if (cd "$dir" && "$@") >"$tmp" 2>&1; then
+    status=0
+  else
+    status=$?
+  fi
+
+  show_truncated_output "$tmp"
+  rm -f "$tmp"
+  return "$status"
 }
 
 main_lefthook_bin() {
@@ -96,7 +178,7 @@ fresh_default_ref() {
     fi
 
     if [[ -n "$branch" ]] &&
-      git_wt "$repo" -C "$repo" fetch --prune origin "$branch" >/dev/null 2>&1 &&
+      run_logged "Updating $branch from origin..." git_wt "$repo" -C "$repo" fetch --prune origin "$branch" >&2 &&
       git -C "$repo" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
       echo "origin/$branch"
       return 0
@@ -381,7 +463,8 @@ cmd_grow() {
   for ((i = 1; i <= size; i++)); do
     slot="$(next_free_slot_path "$pool")"
     info "  - $(basename "$slot"): creating detached worktree at $slot"
-    git_wt "$repo" -C "$repo" worktree add -q --detach "$slot" "$base_ref"
+    run_logged "Creating detached worktree $(basename "$slot")..." \
+      git_wt "$repo" -C "$repo" worktree add -q --detach "$slot" "$base_ref"
 
     if ((warm)); then
       local install_cmd lockfile
@@ -399,7 +482,8 @@ cmd_grow() {
         info "    deps: node_modules already present; skipping $install_cmd"
       else
         info "    deps: running $install_cmd"
-        (cd "$slot" && $install_cmd)
+        run_logged_in_dir "Installing dependencies in $(basename "$slot")..." \
+          "$slot" bash -c "$install_cmd"
       fi
     fi
   done
@@ -765,19 +849,20 @@ alloc_branch() {
   mkdir -p "$(dirname "$target")"
 
   info "Moving worktree: $slot -> $target"
-  git_wt "$repo" -C "$repo" worktree move "$slot" "$target"
+  run_logged "Moving worktree into branch slot..." \
+    git_wt "$repo" -C "$repo" worktree move "$slot" "$target"
 
   if ((branch_exists == 1)); then
     info "Checking out existing branch: $branch"
-    git_wt "$repo" -C "$target" checkout --quiet "$branch"
+    run_logged "Checking out existing branch..." \
+      git_wt "$repo" -C "$target" checkout --quiet "$branch"
     info "Rebasing on $rebase_ref..."
-    (
-      cd "$target"
-      git_wt "$repo" rebase "$rebase_ref" --autostash
-    )
+    run_logged_in_dir "Rebasing on $rebase_ref..." \
+      "$target" git_wt "$repo" rebase "$rebase_ref" --autostash
   else
     info "Allocating branch $branch from $base_ref"
-    git_wt "$repo" -C "$target" checkout --quiet -b "$branch" "$base_ref"
+    run_logged "Creating branch from $base_ref..." \
+      git_wt "$repo" -C "$target" checkout --quiet -b "$branch" "$base_ref"
   fi
 
   local install_cmd lockfile
@@ -801,7 +886,8 @@ alloc_branch() {
 
   if ((needs_install)); then
     info "Installing dependencies with $install_cmd..."
-    (cd "$target" && $install_cmd)
+    run_logged_in_dir "Installing new dependencies..." \
+      "$target" bash -c "$install_cmd"
   fi
 
   if ((branch_exists == 1)); then
@@ -944,7 +1030,8 @@ cmd_realloc() {
 
   if ! is_detached "$target"; then
     info "Detaching HEAD before reallocating this worktree."
-    git_wt "$repo" -C "$target" checkout --quiet --detach
+    run_logged "Detaching selected worktree..." \
+      git_wt "$repo" -C "$target" checkout --quiet --detach
   else
     info "HEAD is already detached."
   fi
@@ -952,7 +1039,8 @@ cmd_realloc() {
   local slot
   slot="$(next_free_slot_path "$pool")"
   info "Moving selected worktree to temporary free slot: $slot"
-  git_wt "$repo" -C "$repo" worktree move "$target" "$slot"
+  run_logged "Moving selected worktree to temporary free slot..." \
+    git_wt "$repo" -C "$repo" worktree move "$target" "$slot"
 
   alloc_branch "$repo" "$pool" "$branch" "$base_ref" "$base_overridden" "$slot"
 }
@@ -998,7 +1086,8 @@ cmd_free() {
 
   if ! is_detached "$target"; then
     info "Detaching HEAD before returning worktree to pool."
-    git_wt "$repo" -C "$target" checkout --quiet --detach
+    run_logged "Detaching worktree..." \
+      git_wt "$repo" -C "$target" checkout --quiet --detach
   else
     info "HEAD is already detached."
   fi
@@ -1013,7 +1102,8 @@ cmd_free() {
   free_path="$(next_free_slot_path "$pool")"
   if [[ "$target" != "$free_path" ]]; then
     info "Moving worktree to free slot: $free_path"
-    git_wt "$repo" -C "$repo" worktree move "$target" "$free_path"
+    run_logged "Moving worktree to free slot..." \
+      git_wt "$repo" -C "$repo" worktree move "$target" "$free_path"
   fi
 
   info "Freed to: $(basename "$free_path")"
@@ -1072,10 +1162,12 @@ cmd_remove() {
 
   if ((force)); then
     info "Removing worktree with --force."
-    git_wt "$repo" -C "$repo" worktree remove --force "$target"
+    run_logged "Removing worktree..." \
+      git_wt "$repo" -C "$repo" worktree remove --force "$target"
   else
     info "Removing worktree."
-    git_wt "$repo" -C "$repo" worktree remove "$target"
+    run_logged "Removing worktree..." \
+      git_wt "$repo" -C "$repo" worktree remove "$target"
   fi
   info "Removed: $(basename "$target")"
   info "Path: $target"

@@ -223,6 +223,9 @@ The main checkout is treated as the anchor checkout. It appears as `main` in
 `wt alloc` refreshes from Git directly; it does not rely on local aliases.
 `wt` prints each implicit step it runs: fetch/base selection, slot selection,
 worktree moves, checkout/rebase, and dependency installation decisions.
+Long-running commands are shown as phases, and their output is summarized with
+an ellipsis plus the last three lines to avoid overwhelming the terminal.
+Set `WT_COLOR=0` or `NO_COLOR=1` to disable `wt`'s colored status lines.
 
 For Git hooks, `wt` first tries to reuse Lefthook from the main checkout
 (`node_modules/.bin/lefthook` or the package binary). If it cannot find one, it
