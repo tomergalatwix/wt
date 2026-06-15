@@ -13,13 +13,14 @@ fi
 assert_contains 'Changed files:' "$root/free-no-force.log"
 assert_contains 'M README.md' "$root/free-no-force.log"
 assert_contains '--force or -f' "$root/free-no-force.log"
+assert_contains 'discard them and continue' "$root/free-no-force.log"
 
 (cd "$REPO" && "$WT_BIN" free "$root/dirty-free" -f > "$root/free-force.log" 2>&1)
-assert_contains 'continuing because --force/-f was provided' "$root/free-force.log"
+assert_contains 'discarding changes because --force/-f was provided' "$root/free-force.log"
 free_path="$(awk '/^Path: / { print $2 }' "$root/free-force.log" | tail -n1)"
 test -n "$free_path"
-grep -q 'dirty' "$free_path/README.md"
-test -n "$(git -C "$free_path" status --porcelain)"
+! grep -q 'dirty' "$free_path/README.md"
+test -z "$(git -C "$free_path" status --porcelain)"
 
 git -C "$REPO" worktree add -q "$root/remove-me" -b remove-me origin/master
 (cd "$REPO" && "$WT_BIN" remove "$root/remove-me" --yes > "$root/remove.log")
@@ -32,8 +33,9 @@ git -C "$REPO" worktree add -q "$root/dirty-realloc" -b dirty-realloc origin/mas
 printf 'carry\n' >> "$root/dirty-realloc/README.md"
 (cd "$REPO" && "$WT_BIN" realloc "$root/dirty-realloc" feature/dirty-realloc --yes -f > "$root/realloc-force.log" 2>&1)
 assert_contains 'Changed files:' "$root/realloc-force.log"
-assert_contains 'Reallocated slot is dirty' "$root/realloc-force.log"
+assert_contains 'discarding changes because --force/-f was provided' "$root/realloc-force.log"
 new_path="$root/repo-worktrees/feature/dirty-realloc"
 test -d "$new_path"
 assert_eq 'feature/dirty-realloc' "$(git -C "$new_path" branch --show-current)"
-grep -q 'carry' "$new_path/README.md"
+! grep -q 'carry' "$new_path/README.md"
+test -z "$(git -C "$new_path" status --porcelain)"

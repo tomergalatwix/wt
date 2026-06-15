@@ -172,8 +172,8 @@ wt free my-feature -f
 ```
 
 Without `--force`/`-f`, dirty `free` and `realloc` operations show the changed
-files and ask before continuing. Dirty changes are preserved; a dirty free slot
-will not be reused by `wt alloc` until it is cleaned.
+files and ask before discarding them. With `--force`/`-f`, dirty changes are
+discarded without prompting so reusable slots stay clean.
 
 Remove a worktree:
 

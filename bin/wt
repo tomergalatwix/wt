@@ -101,11 +101,23 @@ print_dirty_files() {
   git -C "$wt" status --short
 }
 
-confirm_dirty_worktree() {
-  local wt="$1"
-  local force="$2"
-  local prompt="$3"
-  local consequence="$4"
+discard_worktree_changes() {
+  local repo="$1"
+  local wt="$2"
+
+  info "Discarding dirty worktree changes before reuse."
+  run_logged "Resetting tracked changes..." \
+    git_wt "$repo" -C "$wt" reset --hard
+  run_logged "Removing untracked files..." \
+    git_wt "$repo" -C "$wt" clean -fd
+}
+
+ensure_clean_for_reuse() {
+  local repo="$1"
+  local wt="$2"
+  local force="$3"
+  local prompt="$4"
+  local consequence="$5"
 
   if [[ -z "$(git -C "$wt" status --porcelain)" ]]; then
     info "Worktree is clean."
@@ -114,11 +126,8 @@ confirm_dirty_worktree() {
 
   print_dirty_files "$wt"
   if ((force == 1)); then
-    info "Worktree is dirty; continuing because --force/-f was provided."
-    return 0
-  fi
-
-  if [[ -t 0 ]]; then
+    info "Worktree is dirty; discarding changes because --force/-f was provided."
+  elif [[ -t 0 ]]; then
     local answer
     info "$consequence"
     read -r -p "$prompt [y/N] " answer
@@ -126,11 +135,13 @@ confirm_dirty_worktree() {
       info "Cancelled."
       return 1
     }
-    info "Worktree is dirty; continuing by confirmation."
-    return 0
+    info "Worktree is dirty; discarding changes by confirmation."
+  else
+    die "Worktree has uncommitted changes. Re-run with --force or -f to discard them and continue."
   fi
 
-  die "Worktree has uncommitted changes. Re-run with --force or -f to continue anyway."
+  discard_worktree_changes "$repo" "$wt"
+  info "Worktree is clean."
 }
 
 main_lefthook_bin() {
@@ -1051,13 +1062,12 @@ cmd_realloc() {
   info "Resolved worktree: $target"
 
   info "Checking worktree status..."
-  local allow_dirty_slot=0
-  [[ -n "$(git -C "$target" status --porcelain)" ]] && allow_dirty_slot=1
-  confirm_dirty_worktree \
+  ensure_clean_for_reuse \
+    "$repo" \
     "$target" \
     "$force" \
-    "Realloc anyway?" \
-    "These changes will be kept in this worktree while it is reallocated and may carry into the target branch." || return 0
+    "Realloc anyway and discard these changes?" \
+    "These changes will be permanently discarded before reallocating this worktree." || return 0
 
   if ((yes == 0)); then
     local answer
@@ -1086,7 +1096,7 @@ cmd_realloc() {
   run_logged "Moving selected worktree to temporary free slot..." \
     git_wt "$repo" -C "$repo" worktree move "$target" "$slot"
 
-  alloc_branch "$repo" "$pool" "$branch" "$base_ref" "$base_overridden" "$slot" "$allow_dirty_slot"
+  alloc_branch "$repo" "$pool" "$branch" "$base_ref" "$base_overridden" "$slot" 0
 }
 
 cmd_free() {
@@ -1119,11 +1129,12 @@ cmd_free() {
   info "Resolved worktree: $target"
 
   info "Checking worktree status..."
-  confirm_dirty_worktree \
+  ensure_clean_for_reuse \
+    "$repo" \
     "$target" \
     "$force" \
-    "Free anyway?" \
-    "These changes will be kept in the moved free slot. Dirty free slots are not reusable by wt alloc until cleaned." || return 0
+    "Free anyway and discard these changes?" \
+    "These changes will be permanently discarded before the worktree is returned to the free pool." || return 0
 
   if ! is_detached "$target"; then
     info "Detaching HEAD before returning worktree to pool."
