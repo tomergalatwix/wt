@@ -69,7 +69,12 @@ wt() {
 
     case "$_wt_action" in
       __WT_GO__)
-        cd "$_wt_payload" || return $?
+        local _wt_go_path _wt_go_name
+        _wt_go_path="${_wt_payload%%$'	'*}"
+        _wt_go_name="${_wt_payload#*$'	'}"
+        [[ "$_wt_go_name" == "$_wt_payload" ]] && _wt_go_name="$(basename "$_wt_go_path")"
+        cd "$_wt_go_path" || return $?
+        print -r -- "Switched to worktree ${_wt_go_name}."
         return 0
         ;;
       __WT_FREE__)
@@ -136,12 +141,16 @@ wt() {
   if [[ "${1:-}" == "go" ]]; then
     shift
     if [[ "${1:-}" == "-" ]]; then
-      cd - || return $?
+      cd - >/dev/null || return $?
+      print -r -- "Switched to previous directory."
       return 0
     fi
-    local _wt_path
-    _wt_path="$(command wt go --print-path "$@")" || return $?
+    local _wt_record _wt_path _wt_name
+    _wt_record="$(command wt go --print-record "$@")" || return $?
+    _wt_path="${_wt_record%%$'	'*}"
+    _wt_name="${_wt_record#*$'	'}"
     cd "$_wt_path" || return $?
+    print -r -- "Switched to worktree ${_wt_name}."
     return 0
   fi
 

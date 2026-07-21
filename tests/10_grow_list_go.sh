@@ -24,3 +24,21 @@ assert_eq "$(cd "$root/repo-worktrees/free-1" && pwd -P)" "$(cd "$free_path" && 
 
 main_path="$(cd "$root/repo-worktrees/free-1" && "$WT_BIN" go main --print-path)"
 assert_eq "$(cd "$REPO" && pwd -P)" "$(cd "$main_path" && pwd -P)"
+
+(cd "$REPO" && "$WT_BIN" go main > "$root/go-main.log")
+assert_contains 'Found worktree main:' "$root/go-main.log"
+assert_contains 'Run: cd ' "$root/go-main.log"
+
+if (cd "$REPO" && "$WT_BIN" go missing-worktree > "$root/go-missing.log" 2>&1); then
+  fail 'wt go missing-worktree unexpectedly succeeded'
+fi
+assert_contains "Could not find worktree containing 'missing-worktree'." "$root/go-missing.log"
+
+git -C "$REPO" worktree add -q "$root/repo-worktrees/amb-one" -b amb-one origin/master
+git -C "$REPO" worktree add -q "$root/repo-worktrees/amb-two" -b amb-two origin/master
+if (cd "$REPO" && "$WT_BIN" go amb > "$root/go-ambiguous.log" 2>&1); then
+  fail 'wt go amb unexpectedly succeeded'
+fi
+assert_contains "Ambiguous worktree query 'amb':" "$root/go-ambiguous.log"
+assert_contains 'amb-one (amb-one)' "$root/go-ambiguous.log"
+assert_contains 'amb-two (amb-two)' "$root/go-ambiguous.log"

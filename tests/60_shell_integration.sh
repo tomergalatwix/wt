@@ -11,8 +11,14 @@ assert_eq "$(cd "$root/repo-worktrees/feature/shell" && pwd -P)" "$(cd "$alloc_p
 assert_not_contains '__WT_ALLOCATED__' "$root/alloc.log"
 
 PATH="$(dirname "$WT_BIN"):$PATH" zsh -lc "source '$WT_SHELL'; cd '$root/repo-worktrees/feature/shell'; wt go main; pwd" > "$root/go-main-pwd.log"
+assert_contains 'Switched to worktree main.' "$root/go-main-pwd.log"
 main_pwd="$(tail -n1 "$root/go-main-pwd.log")"
 assert_eq "$(cd "$REPO" && pwd -P)" "$(cd "$main_pwd" && pwd -P)"
+
+if PATH="$(dirname "$WT_BIN"):$PATH" zsh -lc "source '$WT_SHELL'; cd '$REPO'; wt go missing-worktree" > "$root/go-missing-shell.log" 2>&1; then
+  fail 'shell wt go missing-worktree unexpectedly succeeded'
+fi
+assert_contains "Could not find worktree containing 'missing-worktree'." "$root/go-missing-shell.log"
 
 git -C "$REPO" worktree add -q "$root/repo-worktrees/to-free" -b to-free origin/master
 mkdir -p "$root/repo-worktrees/to-free/subdir"

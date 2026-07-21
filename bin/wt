@@ -388,11 +388,125 @@ all_pool_worktrees() {
     done | sort
 }
 
-all_worktrees() {
+all_worktree_records() {
   local repo="$1"
   git_wt "$repo" -C "$repo" worktree list --porcelain |
-    awk '/^worktree /{print substr($0,10)}' |
+    awk -v repo="$repo" '
+      function emit() {
+        if (path == "") {
+          return
+        }
+        name = path
+        sub(/^.*\//, "", name)
+        if (path == repo) {
+          name = "main"
+        }
+        if (branch == "") {
+          branch = "(detached HEAD)"
+        }
+        sub(/^refs\/heads\//, "", branch)
+        print path "|" branch "|" name
+      }
+      /^worktree / {
+        emit()
+        path = substr($0, 10)
+        branch = ""
+        next
+      }
+      /^branch / {
+        branch = substr($0, 8)
+        next
+      }
+      /^detached$/ {
+        branch = "(detached HEAD)"
+        next
+      }
+      END {
+        emit()
+      }
+    ' |
     sort
+}
+
+all_worktrees() {
+  local repo="$1"
+  all_worktree_records "$repo" | cut -d'|' -f1
+}
+
+status_jobs() {
+  local jobs="${WT_STATUS_JOBS:-6}"
+  if [[ ! "$jobs" =~ ^[0-9]+$ || "$jobs" -lt 1 ]]; then
+    jobs=6
+  fi
+  printf '%s\n' "$jobs"
+}
+
+worktree_status_records() {
+  (($# > 0)) || return 0
+
+  local jobs
+  jobs="$(status_jobs)"
+  printf '%s\0' "$@" |
+    xargs -0 -n 1 -P "$jobs" sh -c '
+      wt=$1
+      if tracked=$(git -C "$wt" status --porcelain --untracked-files=no 2>/dev/null) && [ -n "$tracked" ]; then
+        status=dirty
+      elif output=$(git -C "$wt" ls-files --others --exclude-standard --directory --no-empty-directory 2>/dev/null); then
+        if [ -n "$output" ]; then
+          status=dirty
+        else
+          status=clean
+        fi
+      else
+        status=unknown
+      fi
+      printf "%s\t%s\n" "$wt" "$status"
+    ' sh
+}
+
+worktree_rows() {
+  local repo="$1"
+  local records=()
+  local paths=()
+  local record path rest branch name
+
+  while IFS= read -r record; do
+    [[ -n "$record" ]] || continue
+    records+=("$record")
+    path="${record%%|*}"
+    paths+=("$path")
+  done < <(all_worktree_records "$repo")
+
+  local statuses=()
+  local status_line
+  if ((${#paths[@]} > 0)); then
+    while IFS= read -r status_line; do
+      [[ -n "$status_line" ]] || continue
+      statuses+=("$status_line")
+    done < <(worktree_status_records "${paths[@]}")
+  fi
+
+  for record in "${records[@]}"; do
+    path="${record%%|*}"
+    rest="${record#*|}"
+    branch="${rest%%|*}"
+    name="${rest#*|}"
+
+    local status="unknown"
+    local i status_path
+    for ((i = 0; i < ${#statuses[@]}; i++)); do
+      status_path="${statuses[$i]%%$'\t'*}"
+      if [[ "$status_path" == "$path" ]]; then
+        status="${statuses[$i]#*$'\t'}"
+        break
+      fi
+    done
+
+    local mtime mtime_h
+    mtime="$(stat_mtime "$path")"
+    mtime_h="$(relative_from_epoch "$mtime")"
+    printf '%s|%s|%s|%s|%s|%s\n' "$mtime" "$name" "$status" "$mtime_h" "$branch" "$path"
+  done
 }
 
 is_free_slot_path() {
@@ -433,18 +547,20 @@ pick_worktree_target() {
   local repo="$1"
   local query="$2"
   local matches=()
-  local wt
+  local record
 
-  while IFS= read -r wt; do
-    [[ -n "$wt" ]] || continue
-    local branch base name
-    branch="$(branch_name "$wt")"
+  while IFS= read -r record; do
+    [[ -n "$record" ]] || continue
+    local wt rest branch base name
+    wt="${record%%|*}"
+    rest="${record#*|}"
+    branch="${rest%%|*}"
+    name="${rest#*|}"
     base="$(basename "$wt")"
-    name="$(wt_name "$repo" "$wt")"
     if [[ "$wt" == "$query" || "$branch" == *"$query"* || "$base" == *"$query"* || "$name" == *"$query"* || "$wt" == *"$query"* ]]; then
       matches+=("$wt|$branch|$name")
     fi
-  done < <(all_worktrees "$repo")
+  done < <(all_worktree_records "$repo")
 
   if ((${#matches[@]} == 1)); then
     printf '%s\n' "${matches[0]%%|*}"
@@ -550,22 +666,15 @@ cmd_list() {
   done
 
   local rows=()
-  local wt
-  while IFS= read -r wt; do
-    [[ -n "$wt" ]] || continue
-    local name status mtime mtime_h branch
-    name="$(wt_name "$repo" "$wt")"
-    branch="$(branch_name "$wt")"
-    status="clean"
-    [[ -n "$(git -C "$wt" status --porcelain)" ]] && status="dirty"
-    mtime="$(stat_mtime "$wt")"
-    mtime_h="$(relative_from_epoch "$mtime")"
-    rows+=("$mtime|$name|$status|$mtime_h|$branch")
-  done < <(all_worktrees "$repo")
+  local row
+  while IFS= read -r row; do
+    [[ -n "$row" ]] || continue
+    rows+=("$row")
+  done < <(worktree_rows "$repo")
 
   local name_w=4
   local branch_w=6
-  local row line name branch
+  local line name branch
   for row in "${rows[@]}"; do
     line="${row#*|}"   # drop epoch
     name="${line%%|*}"
@@ -593,7 +702,8 @@ cmd_list() {
     status="${line%%|*}"
     line="${line#*|}"
     mtime_h="${line%%|*}"
-    branch="${line#*|}"
+    line="${line#*|}"
+    branch="${line%%|*}"
     printf "%-${name_w}s  %-7s  %-16s  %-${branch_w}s\n" "$name" "$status" "$mtime_h" "$branch"
   done < <(printf '%s\n' "${rows[@]}" | sort -t'|' -k1,1nr)
 
@@ -609,18 +719,11 @@ cmd_interactive() {
   fzf_cmd="$(fzf_command)"
 
   local rows=()
-  local wt
-  while IFS= read -r wt; do
-    [[ -n "$wt" ]] || continue
-    local name status mtime mtime_h branch
-    name="$(wt_name "$repo" "$wt")"
-    branch="$(branch_name "$wt")"
-    status="clean"
-    [[ -n "$(git -C "$wt" status --porcelain)" ]] && status="dirty"
-    mtime="$(stat_mtime "$wt")"
-    mtime_h="$(relative_from_epoch "$mtime")"
-    rows+=("$mtime|$name|$status|$mtime_h|$branch|$wt")
-  done < <(all_worktrees "$repo")
+  local row
+  while IFS= read -r row; do
+    [[ -n "$row" ]] || continue
+    rows+=("$row")
+  done < <(worktree_rows "$repo")
 
   local name_w=16
   local branch_w=18
@@ -729,7 +832,7 @@ cmd_interactive() {
     case "$action" in
       go)
         if [[ "${WT_SHELL_INTEGRATION:-0}" == "1" ]]; then
-          printf '__WT_GO__\t%s\n' "$path"
+          printf '__WT_GO__\t%s\t%s\n' "$path" "$name"
         else
           info "$path"
           info "Run: cd $path"
@@ -774,14 +877,27 @@ cmd_interactive() {
   done
 }
 
+go_message() {
+  local machine="$1"
+  shift
+  if ((machine)); then
+    printf '%s
+' "$*" >&2
+  else
+    info "$*"
+  fi
+}
+
 cmd_go() {
   local repo="$1"
   shift
   local print_path=0
+  local print_record=0
   local query=""
   while (($#)); do
     case "$1" in
       --print-path) print_path=1 ;;
+      --print-record) print_record=1 ;;
       *) query="$1" ;;
     esac
     shift
@@ -789,47 +905,61 @@ cmd_go() {
   [[ -n "$query" ]] || die "Usage: wt go <query>"
 
   local matches=()
-  local wt
-  while IFS= read -r wt; do
-    [[ -n "$wt" ]] || continue
-    local branch base name
-    branch="$(branch_name "$wt")"
+  local record
+  while IFS= read -r record; do
+    [[ -n "$record" ]] || continue
+    local wt rest branch base name
+    wt="${record%%|*}"
+    rest="${record#*|}"
+    branch="${rest%%|*}"
+    name="${rest#*|}"
     base="$(basename "$wt")"
-    name="$(wt_name "$repo" "$wt")"
     if [[ "$branch" == *"$query"* || "$base" == *"$query"* || "$name" == *"$query"* || "$wt" == *"$query"* ]]; then
       matches+=("$wt|$branch|$name")
     fi
-  done < <(all_worktrees "$repo")
+  done < <(all_worktree_records "$repo")
+
+  local machine=0
+  ((print_path || print_record)) && machine=1
 
   if ((${#matches[@]} == 1)); then
-    local path="${matches[0]%%|*}"
-    if ((print_path)); then
-      printf '%s\n' "$path"
+    local path rest branch name
+    path="${matches[0]%%|*}"
+    rest="${matches[0]#*|}"
+    branch="${rest%%|*}"
+    name="${rest##*|}"
+    if ((print_record)); then
+      printf '%s	%s
+' "$path" "$name"
+    elif ((print_path)); then
+      printf '%s
+' "$path"
     else
-      info "$path"
+      info "Found worktree $name: $path"
       info "Run: cd $path"
     fi
     return 0
   fi
 
   if ((${#matches[@]} > 1)); then
-    info "Ambiguous match for '$query'. Did you mean:"
-    local m
+    local m matches_text sep
+    matches_text=""
+    sep=""
     for m in "${matches[@]}"; do
-      local path rest branch name
-      path="${m%%|*}"
+      local rest branch name
       rest="${m#*|}"
       branch="${rest%%|*}"
       name="${rest##*|}"
-      printf '  %s (%s)\n' "$name" "$branch"
+      matches_text+="${sep}${name} (${branch})"
+      sep=", "
     done
+    go_message "$machine" "Ambiguous worktree query '$query': $matches_text"
     return 2
   fi
 
-  info "No worktree matching '$query'"
+  go_message "$machine" "Could not find worktree containing '$query'."
   return 1
 }
-
 alloc_branch() {
   local repo="$1"
   local pool="$2"
