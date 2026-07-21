@@ -2,7 +2,10 @@
 set -euo pipefail
 
 WT_FREE_PREFIX="${WT_FREE_PREFIX:-free-}"
-WT_REPO_RAW_BASE="${WT_REPO_RAW_BASE:-https://raw.githubusercontent.com/tomergalatwix/wt/master}"
+WT_REPO_URL="${WT_REPO_URL:-https://github.com/tomergalatwix/wt.git}"
+WT_REPO_REF="${WT_REPO_REF:-master}"
+WT_REPO_RAW_ROOT="${WT_REPO_RAW_ROOT:-https://raw.githubusercontent.com/tomergalatwix/wt}"
+WT_REPO_RAW_BASE="${WT_REPO_RAW_BASE:-}"
 
 die() {
   if color_enabled; then
@@ -376,6 +379,26 @@ download_file() {
     wget -qO "$dest" "$url"
   else
     die "curl or wget is required."
+  fi
+}
+
+resolve_repo_ref() {
+  if [[ "$WT_REPO_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    printf '%s\n' "$WT_REPO_REF"
+    return 0
+  fi
+
+  local sha
+  sha="$(git ls-remote "$WT_REPO_URL" "refs/heads/$WT_REPO_REF" 2>/dev/null | awk '{ print $1; exit }')"
+  [[ -n "$sha" ]] || die "Could not resolve $WT_REPO_REF from $WT_REPO_URL. Set WT_REPO_RAW_BASE to install from a custom source."
+  printf '%s\n' "$sha"
+}
+
+repo_raw_base() {
+  if [[ -n "$WT_REPO_RAW_BASE" ]]; then
+    printf '%s\n' "$WT_REPO_RAW_BASE"
+  else
+    printf '%s/%s\n' "$WT_REPO_RAW_ROOT" "$(resolve_repo_ref)"
   fi
 }
 
@@ -1359,12 +1382,13 @@ cmd_remove() {
 }
 
 cmd_update() {
-  local tmp
+  local tmp raw_base
   tmp="$(mktemp -t wt-install.XXXXXX)"
+  raw_base="$(repo_raw_base)"
 
-  info "Downloading installer from: $WT_REPO_RAW_BASE/install.sh"
-  download_file "$WT_REPO_RAW_BASE/install.sh" "$tmp"
-  bash "$tmp"
+  info "Downloading installer from: $raw_base/install.sh"
+  download_file "$raw_base/install.sh" "$tmp"
+  WT_REPO_RAW_BASE="$raw_base" bash "$tmp"
   rm -f "$tmp"
 }
 
