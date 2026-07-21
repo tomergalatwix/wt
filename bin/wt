@@ -6,6 +6,7 @@ WT_REPO_URL="${WT_REPO_URL:-https://github.com/tomergalatwix/wt.git}"
 WT_REPO_REF="${WT_REPO_REF:-master}"
 WT_REPO_RAW_ROOT="${WT_REPO_RAW_ROOT:-https://raw.githubusercontent.com/tomergalatwix/wt}"
 WT_REPO_RAW_BASE="${WT_REPO_RAW_BASE:-}"
+WT_CACHE_TTL="${WT_CACHE_TTL:-10}"
 
 die() {
   if color_enabled; then
@@ -487,7 +488,38 @@ worktree_status_records() {
     ' sh
 }
 
-worktree_rows() {
+cache_ttl() {
+  local ttl="$WT_CACHE_TTL"
+  if [[ ! "$ttl" =~ ^[0-9]+$ ]]; then
+    ttl=10
+  fi
+  printf '%s\n' "$ttl"
+}
+
+cache_dir() {
+  printf '%s/wt\n' "${XDG_CACHE_HOME:-$HOME/.cache}"
+}
+
+cache_key() {
+  local value="$1"
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$value" | shasum -a 1 | awk '{ print $1 }'
+  else
+    printf '%s' "$value" | cksum | awk '{ print $1 }'
+  fi
+}
+
+worktree_rows_cache_file() {
+  local repo="$1"
+  printf '%s/%s.rows\n' "$(cache_dir)" "$(cache_key "$repo")"
+}
+
+clear_worktree_rows_cache() {
+  local repo="$1"
+  rm -f "$(worktree_rows_cache_file "$repo")"
+}
+
+worktree_rows_uncached() {
   local repo="$1"
   local records=()
   local paths=()
@@ -530,6 +562,41 @@ worktree_rows() {
     mtime_h="$(relative_from_epoch "$mtime")"
     printf '%s|%s|%s|%s|%s|%s\n' "$mtime" "$name" "$status" "$mtime_h" "$branch" "$path"
   done
+}
+
+worktree_rows() {
+  local repo="$1"
+  local ttl file now mtime age dir tmp
+
+  ttl="$(cache_ttl)"
+  if ((ttl == 0)); then
+    worktree_rows_uncached "$repo"
+    return 0
+  fi
+
+  file="$(worktree_rows_cache_file "$repo")"
+  if [[ -f "$file" ]]; then
+    now="$(date +%s)"
+    mtime="$(stat_mtime "$file")"
+    age=$((now - mtime))
+    if ((age >= 0 && age <= ttl)); then
+      cat "$file"
+      return 0
+    fi
+  fi
+
+  dir="$(cache_dir)"
+  mkdir -p "$dir" 2>/dev/null || {
+    worktree_rows_uncached "$repo"
+    return 0
+  }
+  tmp="$(mktemp "$dir/rows.XXXXXX")" || {
+    worktree_rows_uncached "$repo"
+    return 0
+  }
+  worktree_rows_uncached "$repo" > "$tmp"
+  mv "$tmp" "$file"
+  cat "$file"
 }
 
 is_free_slot_path() {
@@ -675,6 +742,7 @@ cmd_grow() {
       fi
     fi
   done
+  clear_worktree_rows_cache "$repo"
 }
 
 cmd_list() {
@@ -1106,6 +1174,7 @@ alloc_branch() {
     info "Base:    $base_ref"
   fi
   info "Path:    $target"
+  clear_worktree_rows_cache "$repo"
   if [[ "${WT_SHELL_INTEGRATION:-0}" == "1" ]]; then
     printf '__WT_ALLOCATED__\t%s\n' "$target"
   fi
@@ -1313,6 +1382,7 @@ cmd_free() {
 
   info "Freed to: $(basename "$free_path")"
   info "Path: $free_path"
+  clear_worktree_rows_cache "$repo"
   if [[ "${WT_SHELL_INTEGRATION:-0}" == "1" ]]; then
     printf '__WT_FREED__\t%s\t%s\n' "$target" "$free_path"
   fi
@@ -1379,6 +1449,7 @@ cmd_remove() {
   fi
   info "Removed: $(basename "$target")"
   info "Path: $target"
+  clear_worktree_rows_cache "$repo"
 }
 
 cmd_update() {
