@@ -32,7 +32,7 @@ if git -C "$REPO" worktree list --porcelain | grep -q "worktree $root/external-o
   fail 'old external worktree is still registered'
 fi
 assert_contains 'Moving selected worktree to temporary free slot' "$root/realloc.log"
-assert_contains 'Using reallocated slot' "$root/realloc.log"
+assert_contains 'Using selected free slot' "$root/realloc.log"
 
 (
   cd "$REPO"
@@ -42,3 +42,34 @@ assert_contains 'Using reallocated slot' "$root/realloc.log"
   fi
 )
 assert_contains 'Worktree is already free. Use wt alloc' "$root/realloc-free.log"
+
+direct_root="$(new_test_root)"
+create_repo_fixture "$direct_root"
+(
+  cd "$REPO"
+  "$WT_BIN" grow --size 3 > "$direct_root/direct-grow.log"
+  "$WT_BIN" alloc feature/direct > "$direct_root/direct-alloc.log" 2>&1
+)
+test -d "$direct_root/repo-worktrees/feature/direct"
+test -d "$direct_root/repo-worktrees/free-1"
+test -d "$direct_root/repo-worktrees/free-2"
+test ! -e "$direct_root/repo-worktrees/free-3"
+assert_eq 'feature/direct' "$(git -C "$direct_root/repo-worktrees/feature/direct" branch --show-current)"
+assert_contains 'Using free slot: free-1' "$direct_root/direct-alloc.log"
+assert_contains 'Closing free slot gap: free-2 -> free-1' "$direct_root/direct-alloc.log"
+assert_contains 'Closing free slot gap: free-3 -> free-2' "$direct_root/direct-alloc.log"
+
+gap_root="$(new_test_root)"
+create_repo_fixture "$gap_root"
+(
+  cd "$REPO"
+  "$WT_BIN" grow --size 3 > "$gap_root/gap-grow.log"
+  "$WT_BIN" alloc --slot "$gap_root/repo-worktrees/free-2" feature/gap > "$gap_root/gap-alloc.log" 2>&1
+)
+test -d "$gap_root/repo-worktrees/feature/gap"
+test -d "$gap_root/repo-worktrees/free-1"
+test -d "$gap_root/repo-worktrees/free-2"
+test ! -e "$gap_root/repo-worktrees/free-3"
+assert_eq 'feature/gap' "$(git -C "$gap_root/repo-worktrees/feature/gap" branch --show-current)"
+assert_contains 'Using selected free slot: free-2' "$gap_root/gap-alloc.log"
+assert_contains 'Closing free slot gap: free-3 -> free-2' "$gap_root/gap-alloc.log"

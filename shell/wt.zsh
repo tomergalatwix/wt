@@ -109,7 +109,13 @@ wt() {
         return $?
         ;;
       __WT_ALLOC__)
-        __wt_run_and_cd_alloc alloc
+        if [[ "$_wt_payload" == "$_wt_result" || -z "$_wt_payload" ]]; then
+          __wt_run_and_cd_alloc alloc
+        else
+          _wt_name="${_wt_payload%%$'\t'*}"
+          _wt_path="${_wt_payload#*$'\t'}"
+          __wt_run_and_cd_alloc alloc --slot "$_wt_path"
+        fi
         return $?
         ;;
       __WT_GROW__)

@@ -604,6 +604,24 @@ is_free_slot_path() {
   [[ "$(basename "$path")" =~ ^${WT_FREE_PREFIX}[0-9]+$ ]]
 }
 
+sort_worktree_rows() {
+  local mtime name status mtime_h branch path group sort_time sort_name
+  while IFS='|' read -r mtime name status mtime_h branch path; do
+    [[ -n "$mtime" ]] || continue
+    if is_free_slot_path "$path"; then
+      group=1
+      sort_time=0
+      sort_name="$name"
+    else
+      group=0
+      sort_time=$((9999999999 - mtime))
+      sort_name="$name"
+    fi
+    printf '%s|%020d|%s|%s|%s|%s|%s|%s|%s\n' \
+      "$group" "$sort_time" "$sort_name" "$mtime" "$name" "$status" "$mtime_h" "$branch" "$path"
+  done | LC_ALL=C sort -t'|' -k1,1n -k2,2n -k3,3 | cut -d'|' -f4-
+}
+
 next_free_slot_path() {
   local pool="$1"
   local n=1
@@ -612,6 +630,12 @@ next_free_slot_path() {
     [[ ! -e "$candidate" ]] && { printf '%s\n' "$candidate"; return 0; }
     n=$((n + 1))
   done
+}
+
+free_slot_number() {
+  local base
+  base="$(basename "$1")"
+  printf '%s\n' "${base#"$WT_FREE_PREFIX"}"
 }
 
 pick_idle_free_slot() {
@@ -630,7 +654,44 @@ pick_idle_free_slot() {
   done < <(all_pool_worktrees "$repo" "$pool")
 
   ((${#candidates[@]} > 0)) || return 1
-  printf '%s\n' "${candidates[@]}" | sort -t'|' -k1,1n | head -n1 | cut -d'|' -f2-
+  printf '%s\n' "${candidates[@]}" | LC_ALL=C sort -t'|' -k1,1n | head -n1 | cut -d'|' -f2-
+}
+
+compact_free_slots() {
+  local repo="$1"
+  local pool="$2"
+  local slots=()
+  local wt num
+
+  while IFS= read -r wt; do
+    [[ -n "$wt" ]] || continue
+    is_free_slot_path "$wt" || continue
+    if ! is_detached "$wt" || ! is_clean "$wt"; then
+      info "Skipping free slot compaction; $(basename "$wt") is not clean and detached."
+      return 0
+    fi
+    num="$(free_slot_number "$wt")"
+    [[ "$num" =~ ^[0-9]+$ ]] || continue
+    slots+=("$num|$wt")
+  done < <(all_pool_worktrees "$repo" "$pool")
+
+  ((${#slots[@]} > 0)) || return 0
+
+  local next=1 current target _num
+  while IFS='|' read -r _num current; do
+    target="$pool/${WT_FREE_PREFIX}${next}"
+    if [[ "$current" != "$target" ]]; then
+      if [[ -e "$target" ]]; then
+        info "Skipping free slot compaction; target already exists: $target"
+        next=$((next + 1))
+        continue
+      fi
+      info "Closing free slot gap: $(basename "$current") -> $(basename "$target")"
+      run_logged "Closing free slot gap..." \
+        git_wt "$repo" -C "$repo" worktree move "$current" "$target"
+    fi
+    next=$((next + 1))
+  done < <(printf '%s\n' "${slots[@]}" | LC_ALL=C sort -t'|' -k1,1n)
 }
 
 pick_worktree_target() {
@@ -796,7 +857,7 @@ cmd_list() {
     line="${line#*|}"
     branch="${line%%|*}"
     printf "%-${name_w}s  %-7s  %-16s  %-${branch_w}s\n" "$name" "$status" "$mtime_h" "$branch"
-  done < <(printf '%s\n' "${rows[@]}" | sort -t'|' -k1,1nr)
+  done < <(printf '%s\n' "${rows[@]}" | sort_worktree_rows)
 
   info "$((${#rows[@]})) worktrees total"
 }
@@ -840,7 +901,7 @@ cmd_interactive() {
       {
         printf "%-${name_w}s  %-7s  %-16s  %-${branch_w}s\t%s\t%s\n" "NAME" "STATUS" "LAST MODIFIED" "BRANCH" "__NAME__" "__PATH__"
         printf '%s\n' "${rows[@]}" |
-          sort -t'|' -k1,1nr |
+          sort_worktree_rows |
           while IFS='|' read -r _mtime _name _status _mtime_h _branch _path; do
             printf "%-${name_w}s  %-7s  %-16s  %-${branch_w}s\t%s\t%s\n" "$_name" "$_status" "$_mtime_h" "$_branch" "$_name" "$_path"
           done
@@ -952,9 +1013,9 @@ cmd_interactive() {
         ;;
       alloc)
         if [[ "${WT_SHELL_INTEGRATION:-0}" == "1" ]]; then
-          printf '__WT_ALLOC__\n'
+          printf '__WT_ALLOC__\t%s\t%s\n' "$name" "$path"
         else
-          cmd_alloc "$repo"
+          cmd_alloc "$repo" --slot "$path"
         fi
         ;;
       "")
@@ -972,8 +1033,7 @@ go_message() {
   local machine="$1"
   shift
   if ((machine)); then
-    printf '%s
-' "$*" >&2
+    printf '%s\n' "$*" >&2
   else
     info "$*"
   fi
@@ -1020,11 +1080,9 @@ cmd_go() {
     branch="${rest%%|*}"
     name="${rest##*|}"
     if ((print_record)); then
-      printf '%s	%s
-' "$path" "$name"
+      printf '%s\t%s\n' "$path" "$name"
     elif ((print_path)); then
-      printf '%s
-' "$path"
+      printf '%s\n' "$path"
     else
       info "Found worktree $name: $path"
       info "Run: cd $path"
@@ -1104,13 +1162,14 @@ alloc_branch() {
   local slot
   if [[ -n "$preferred_slot" ]]; then
     slot="$preferred_slot"
-    info "Using reallocated slot: $(basename "$slot")"
-    is_detached "$slot" || die "Reallocated slot is not detached: $slot"
+    info "Using selected free slot: $(basename "$slot")"
+    is_free_slot_path "$slot" || die "Selected slot is not a free-N worktree: $slot"
+    is_detached "$slot" || die "Selected slot is not detached: $slot"
     if ! is_clean "$slot"; then
       if ((allow_dirty_slot == 1)); then
-        info "Reallocated slot is dirty; continuing because this was explicitly confirmed."
+        info "Selected slot is dirty; continuing because this was explicitly confirmed."
       else
-        die "Reallocated slot is not clean: $slot"
+        die "Selected slot is not clean: $slot"
       fi
     fi
   else
@@ -1173,6 +1232,7 @@ alloc_branch() {
     info "Allocated: $branch"
     info "Base:    $base_ref"
   fi
+  compact_free_slots "$repo" "$pool"
   info "Path:    $target"
   clear_worktree_rows_cache "$repo"
   if [[ "${WT_SHELL_INTEGRATION:-0}" == "1" ]]; then
@@ -1191,6 +1251,8 @@ cmd_alloc() {
   base_ref="$(default_base_ref "$repo")"
   local base_overridden=0
   local branch=""
+  local slot_query=""
+  local preferred_slot=""
 
   while (($#)); do
     case "$1" in
@@ -1199,6 +1261,11 @@ cmd_alloc() {
         [[ $# -gt 0 ]] || die "--base requires a value"
         base_ref="$1"
         base_overridden=1
+        ;;
+      --slot)
+        shift
+        [[ $# -gt 0 ]] || die "--slot requires a value"
+        slot_query="$1"
         ;;
       *)
         if [[ -z "$branch" ]]; then
@@ -1217,7 +1284,12 @@ cmd_alloc() {
     fi
   fi
 
-  alloc_branch "$repo" "$pool" "$branch" "$base_ref" "$base_overridden" "" 0
+  if [[ -n "$slot_query" ]]; then
+    preferred_slot="$(pick_worktree_target "$repo" "$slot_query")" || die "No worktree matches selected free slot '$slot_query'"
+    is_free_slot_path "$preferred_slot" || die "Selected worktree is not a free slot: $slot_query"
+  fi
+
+  alloc_branch "$repo" "$pool" "$branch" "$base_ref" "$base_overridden" "$preferred_slot" 0
 }
 
 cmd_realloc() {
@@ -1480,8 +1552,9 @@ Usage:
 
 Behavior:
   - grow: adds new detached free-N slots to the reusable pool.
-  - alloc: uses a free worktree for a new/existing branch (new starts at remote default).
+  - alloc: uses a free worktree for a new/existing branch and closes free-N gaps.
   - realloc: frees a selected worktree, then allocates a branch into that same slot.
+  - list: shows in-use worktrees by recency, then free slots lexicographically.
   - free: detaches HEAD and renames worktree to smallest available free-N.
   - remove: deletes a pool worktree after confirmation; main is protected.
   - update: downloads the latest installer from GitHub and reinstalls wt.

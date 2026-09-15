@@ -6,7 +6,7 @@ The idea is burrowed from this blog post: https://daveschumaker.net/tag/worktree
 It gives you:
 
 - `wt` - an interactive `fzf` picker for worktrees and actions
-- `wt list` - a compact worktree table
+- `wt list` - a compact worktree table with reusable free slots grouped at the bottom
 - `wt go <query>` - `cd` into a worktree by name, branch, or path match
 - `wt grow` - add reusable `free-N` worktrees to the pool
 - `wt alloc <branch>` - allocate or checkout a branch in a free worktree
@@ -87,6 +87,10 @@ free-2
 free-3
 ...
 ```
+
+After allocation, `wt` closes gaps in the reusable pool. For example, if
+`free-1`, `free-2`, and `free-3` exist and `free-2` is allocated, `free-3`
+is renamed down to `free-2`.
 
 You can override the pool path:
 
@@ -201,7 +205,7 @@ NAME  STATUS  LAST MODIFIED  BRANCH
 The main picker also includes:
 
 ```text
-Add new worktree                         create next free-N
+Add new worktree                         add next free-N
 ```
 
 After selecting an existing worktree, choose:
@@ -220,6 +224,9 @@ alloc               allocate or checkout a branch in this free worktree
 `Add new worktree` runs `wt grow`.
 `Esc` exits the picker; `Backspace` returns from the action picker to the
 worktree picker.
+
+The picker and `wt list` show in-use worktrees first by recent activity. Free
+slots are always grouped at the bottom and sorted lexicographically.
 
 ## Notes
 
