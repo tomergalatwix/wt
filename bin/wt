@@ -473,16 +473,15 @@ worktree_status_records() {
   printf '%s\0' "$@" |
     xargs -0 -n 1 -P "$jobs" sh -c '
       wt=$1
-      if tracked=$(git -C "$wt" status --porcelain --untracked-files=no 2>/dev/null) && [ -n "$tracked" ]; then
-        status=dirty
-      elif output=$(git -C "$wt" ls-files --others --exclude-standard --directory --no-empty-directory 2>/dev/null); then
-        if [ -n "$output" ]; then
+      if git -C "$wt" diff-index --quiet HEAD -- 2>/dev/null; then
+        status=clean
+      else
+        code=$?
+        if [ "$code" -eq 1 ]; then
           status=dirty
         else
-          status=clean
+          status=unknown
         fi
-      else
-        status=unknown
       fi
       printf "%s\t%s\n" "$wt" "$status"
     ' sh

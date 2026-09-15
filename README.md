@@ -228,6 +228,11 @@ worktree picker.
 The picker and `wt list` show in-use worktrees first by recent activity. Free
 slots are always grouped at the bottom and sorted lexicographically.
 
+For speed, the `STATUS` column only checks tracked changes with Git diff
+metadata. Untracked files are ignored in `wt list` and the picker. Commands
+that can discard or reuse worktrees (`free`, `alloc`, and `realloc`) still run
+full clean checks before mutating anything.
+
 ## Notes
 
 The main checkout is treated as the anchor checkout. It appears as `main` in

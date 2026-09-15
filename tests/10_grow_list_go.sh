@@ -19,6 +19,12 @@ assert_contains 'free-1' "$root/list.log"
 assert_contains 'free-2' "$root/list.log"
 assert_contains '3 worktrees total' "$root/list.log"
 
+printf 'tracked\n' >> "$root/repo-worktrees/free-1/README.md"
+printf 'untracked\n' > "$root/repo-worktrees/free-2/generated.tmp"
+(cd "$REPO" && WT_CACHE_TTL=0 "$WT_BIN" list > "$root/list-status.log")
+assert_eq 'dirty' "$(awk '$1 == "free-1" { print $2 }' "$root/list-status.log")"
+assert_eq 'clean' "$(awk '$1 == "free-2" { print $2 }' "$root/list-status.log")"
+
 free_path="$(cd "$REPO" && "$WT_BIN" go free-1 --print-path)"
 assert_eq "$(cd "$root/repo-worktrees/free-1" && pwd -P)" "$(cd "$free_path" && pwd -P)"
 
