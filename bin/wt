@@ -6,7 +6,7 @@ WT_REPO_URL="${WT_REPO_URL:-https://github.com/tomergalatwix/wt.git}"
 WT_REPO_REF="${WT_REPO_REF:-master}"
 WT_REPO_RAW_ROOT="${WT_REPO_RAW_ROOT:-https://raw.githubusercontent.com/tomergalatwix/wt}"
 WT_REPO_RAW_BASE="${WT_REPO_RAW_BASE:-}"
-WT_CACHE_TTL="${WT_CACHE_TTL:-10}"
+WT_CACHE_TTL="${WT_CACHE_TTL:-300}"
 
 die() {
   if color_enabled; then
@@ -458,9 +458,9 @@ all_worktrees() {
 }
 
 status_jobs() {
-  local jobs="${WT_STATUS_JOBS:-6}"
+  local jobs="${WT_STATUS_JOBS:-24}"
   if [[ ! "$jobs" =~ ^[0-9]+$ || "$jobs" -lt 1 ]]; then
-    jobs=6
+    jobs=24
   fi
   printf '%s\n' "$jobs"
 }

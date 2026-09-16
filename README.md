@@ -233,6 +233,10 @@ metadata. Untracked files are ignored in `wt list` and the picker. Commands
 that can discard or reuse worktrees (`free`, `alloc`, and `realloc`) still run
 full clean checks before mutating anything.
 
+Display rows are cached for 5 minutes by default. Set `WT_CACHE_TTL=<seconds>`
+to tune that, or `WT_CACHE_TTL=0` to force a fresh scan. Status checks run in
+parallel; set `WT_STATUS_JOBS=<n>` to override the default fanout.
+
 ## Notes
 
 The main checkout is treated as the anchor checkout. It appears as `main` in
