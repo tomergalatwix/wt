@@ -861,7 +861,6 @@ cmd_grow() {
       if [[ -d "$slot/node_modules" ]]; then
         success "Added $(basename "$slot"); dependencies already ready"
       else
-        info "Installing dependencies in $(basename "$slot")..."
         run_logged_in_dir "Installing dependencies in $(basename "$slot")..." \
           "$slot" bash -c "$install_cmd"
         success "Added $(basename "$slot") with dependencies"
@@ -1280,17 +1279,15 @@ alloc_branch() {
   elif [[ -z "$install_cmd" ]]; then
     warning "Dependencies skipped: found $lockfile, but its package manager is not in PATH"
   elif [[ ! -d "$target/node_modules" ]]; then
-    info "Installing dependencies with $install_cmd..."
     needs_install=1
   elif [[ -n "$old_head" && -n "$lockfile" ]] && ! git -C "$target" diff --quiet "$old_head" HEAD -- "$lockfile" >/dev/null 2>&1; then
-    info "Installing dependencies with $install_cmd..."
     needs_install=1
   else
     success "Dependencies already ready"
   fi
 
   if ((needs_install)); then
-    run_logged_in_dir "Installing new dependencies..." \
+    run_logged_in_dir "Installing dependencies with $install_cmd..." \
       "$target" bash -c "$install_cmd"
     success "Dependencies installed"
   fi
