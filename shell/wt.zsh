@@ -129,18 +129,24 @@ wt() {
     esac
   fi
 
+  local -a _wt_global_args
+  while [[ "${1:-}" == "--verbose" || "${1:-}" == "-v" ]]; do
+    _wt_global_args+=("$1")
+    shift
+  done
+
   if [[ "${1:-}" == "alloc" ]]; then
-    __wt_run_and_cd_alloc "$@"
+    __wt_run_and_cd_alloc "${_wt_global_args[@]}" "$@"
     return $?
   fi
 
   if [[ "${1:-}" == "realloc" ]]; then
-    __wt_run_and_cd_alloc "$@"
+    __wt_run_and_cd_alloc "${_wt_global_args[@]}" "$@"
     return $?
   fi
 
   if [[ "${1:-}" == "free" ]]; then
-    __wt_run_and_cd_freed "$@"
+    __wt_run_and_cd_freed "${_wt_global_args[@]}" "$@"
     return $?
   fi
 
@@ -152,7 +158,7 @@ wt() {
       return 0
     fi
     local _wt_record _wt_path _wt_name
-    _wt_record="$(command wt go --print-record "$@")" || return $?
+    _wt_record="$(command wt "${_wt_global_args[@]}" go --print-record "$@")" || return $?
     _wt_path="${_wt_record%%$'	'*}"
     _wt_name="${_wt_record#*$'	'}"
     cd "$_wt_path" || return $?
@@ -161,10 +167,10 @@ wt() {
   fi
 
   if [[ "${1:-}" == "update" ]]; then
-    command wt "$@" || return $?
+    command wt "${_wt_global_args[@]}" "$@" || return $?
     source "${WT_CONFIG_DIR:-$HOME/.config/wt}/wt.zsh"
     return 0
   fi
 
-  command wt "$@"
+  command wt "${_wt_global_args[@]}" "$@"
 }

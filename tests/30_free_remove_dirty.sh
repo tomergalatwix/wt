@@ -17,8 +17,9 @@ assert_contains 'discard them and continue' "$root/free-no-force.log"
 
 (cd "$REPO" && "$WT_BIN" free "$root/dirty-free" -f > "$root/free-force.log" 2>&1)
 assert_contains 'discarding changes because --force/-f was provided' "$root/free-force.log"
-free_path="$(awk '/^Path: / { print $2 }' "$root/free-force.log" | tail -n1)"
-test -n "$free_path"
+assert_not_match '^Output:$' "$root/free-force.log"
+assert_not_match '^\(none\)$' "$root/free-force.log"
+free_path="$root/repo-worktrees/free-1"
 ! grep -q 'dirty' "$free_path/README.md"
 test -z "$(git -C "$free_path" status --porcelain)"
 
@@ -34,6 +35,8 @@ printf 'carry\n' >> "$root/dirty-realloc/README.md"
 (cd "$REPO" && "$WT_BIN" realloc "$root/dirty-realloc" feature/dirty-realloc --yes -f > "$root/realloc-force.log" 2>&1)
 assert_contains 'Changed files:' "$root/realloc-force.log"
 assert_contains 'discarding changes because --force/-f was provided' "$root/realloc-force.log"
+assert_not_match '^Output:$' "$root/realloc-force.log"
+assert_not_match '^\(none\)$' "$root/realloc-force.log"
 new_path="$root/repo-worktrees/feature/dirty-realloc"
 test -d "$new_path"
 assert_eq 'feature/dirty-realloc' "$(git -C "$new_path" branch --show-current)"

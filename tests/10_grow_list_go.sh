@@ -8,8 +8,9 @@ create_repo_fixture "$root"
 (cd "$REPO" && "$WT_BIN" grow --size 2 > "$root/grow.log")
 test -d "$root/repo-worktrees/free-1"
 test -d "$root/repo-worktrees/free-2"
-assert_contains 'Creating detached worktree free-1' "$root/grow.log"
-assert_contains 'Creating detached worktree free-2' "$root/grow.log"
+assert_contains 'Growing worktree pool: adding 2 slot(s)...' "$root/grow.log"
+assert_contains 'Added free-1' "$root/grow.log"
+assert_contains 'Added free-2' "$root/grow.log"
 
 (cd "$REPO" && "$WT_BIN" list > "$root/list.log")
 assert_contains 'NAME' "$root/list.log"

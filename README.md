@@ -26,6 +26,20 @@ Optional:
 
 - `yarn`, `pnpm`, or `npm` if your repo has the matching lockfile and you want dependency installation after worktree creation
 
+## Output
+
+Mutating commands keep successful default output concise: they show durable
+milestones such as the selected slot, branch creation, dependency installation,
+and free-pool compaction. While a command is running in a terminal, its current
+phase is shown temporarily and cleared when it completes.
+
+Use `--verbose` (or `-v`) to retain Git/package-manager output and path-level
+details for troubleshooting:
+
+```bash
+wt alloc my-feature --verbose
+```
+
 Install `fzf` on macOS:
 
 ```bash

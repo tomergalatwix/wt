@@ -7,6 +7,7 @@ WT_REPO_REF="${WT_REPO_REF:-master}"
 WT_REPO_RAW_ROOT="${WT_REPO_RAW_ROOT:-https://raw.githubusercontent.com/tomergalatwix/wt}"
 WT_REPO_RAW_BASE="${WT_REPO_RAW_BASE:-}"
 WT_CACHE_TTL="${WT_CACHE_TTL:-300}"
+WT_VERBOSE="${WT_VERBOSE:-0}"
 
 die() {
   if color_enabled; then
@@ -26,6 +27,32 @@ info() {
     printf '\033[36m%s\033[0m\n' "$*"
   else
     printf '%s\n' "$*"
+  fi
+}
+
+verbose_enabled() {
+  [[ "${WT_VERBOSE:-0}" == "1" ]]
+}
+
+verbose_info() {
+  if verbose_enabled; then
+    info "$@"
+  fi
+}
+
+success() {
+  if color_enabled; then
+    printf '\033[32m%s\033[0m\n' "$*"
+  else
+    printf '%s\n' "$*"
+  fi
+}
+
+warning() {
+  if color_enabled; then
+    printf '\033[33m%s\033[0m\n' "$*" >&2
+  else
+    printf '%s\n' "$*" >&2
   fi
 }
 
@@ -68,14 +95,23 @@ run_logged() {
   local tmp status
   tmp="$(mktemp -t wt-output.XXXXXX)" || return $?
 
-  phase "$label"
+  verbose_enabled && phase "$label"
+  if ! verbose_enabled && [[ -t 2 ]]; then
+    printf '\r\033[2K\033[36m%s\033[0m' "$label" >&2
+  fi
   if "$@" >"$tmp" 2>&1; then
     status=0
   else
     status=$?
   fi
 
-  show_truncated_output "$tmp"
+  if ! verbose_enabled && [[ -t 2 ]]; then
+    printf '\r\033[2K' >&2
+  fi
+  if verbose_enabled || ((status != 0)); then
+    ((status != 0)) && warning "Failed: $label"
+    show_truncated_output "$tmp"
+  fi
   rm -f "$tmp"
   return "$status"
 }
@@ -87,14 +123,23 @@ run_logged_in_dir() {
   local tmp status
   tmp="$(mktemp -t wt-output.XXXXXX)" || return $?
 
-  phase "$label"
+  verbose_enabled && phase "$label"
+  if ! verbose_enabled && [[ -t 2 ]]; then
+    printf '\r\033[2K\033[36m%s\033[0m' "$label" >&2
+  fi
   if (cd "$dir" && "$@") >"$tmp" 2>&1; then
     status=0
   else
     status=$?
   fi
 
-  show_truncated_output "$tmp"
+  if ! verbose_enabled && [[ -t 2 ]]; then
+    printf '\r\033[2K' >&2
+  fi
+  if verbose_enabled || ((status != 0)); then
+    ((status != 0)) && warning "Failed: $label"
+    show_truncated_output "$tmp"
+  fi
   rm -f "$tmp"
   return "$status"
 }
@@ -677,20 +722,34 @@ compact_free_slots() {
   ((${#slots[@]} > 0)) || return 0
 
   local next=1 current target _num
+  local first_from="" first_to="" last_from="" last_to="" moved=0
   while IFS='|' read -r _num current; do
     target="$pool/${WT_FREE_PREFIX}${next}"
     if [[ "$current" != "$target" ]]; then
       if [[ -e "$target" ]]; then
-        info "Skipping free slot compaction; target already exists: $target"
+        warning "Skipping free slot compaction; target already exists: $(basename "$target")"
         next=$((next + 1))
         continue
       fi
-      info "Closing free slot gap: $(basename "$current") -> $(basename "$target")"
+      verbose_info "Closing free slot gap: $(basename "$current") -> $(basename "$target")"
       run_logged "Closing free slot gap..." \
         git_wt "$repo" -C "$repo" worktree move "$current" "$target"
+      [[ -z "$first_from" ]] && first_from="$(basename "$current")"
+      [[ -z "$first_to" ]] && first_to="$(basename "$target")"
+      last_from="$(basename "$current")"
+      last_to="$(basename "$target")"
+      moved=$((moved + 1))
     fi
     next=$((next + 1))
   done < <(printf '%s\n' "${slots[@]}" | LC_ALL=C sort -t'|' -k1,1n)
+
+  if ((moved > 0)); then
+    if ((moved == 1)); then
+      success "Compacted free pool: $first_from -> $first_to"
+    else
+      success "Compacted free pool: $first_from..$last_from -> $first_to..$last_to"
+    fi
+  fi
 }
 
 pick_worktree_target() {
@@ -745,6 +804,7 @@ cmd_grow() {
 
   while (($#)); do
     case "$1" in
+      --verbose|-v) WT_VERBOSE=1 ;;
       --size)
         shift
         [[ $# -gt 0 ]] || die "--size requires a value"
@@ -769,36 +829,42 @@ cmd_grow() {
   mkdir -p "$pool"
   git -C "$repo" rev-parse --verify "${base_ref}^{commit}" >/dev/null 2>&1 || die "Base ref '$base_ref' does not exist."
 
-  info "Growing worktree pool in: $pool"
-  info "Base ref: $base_ref"
-  info "Adding: $size"
-  info "Git hooks: $(hook_strategy "$repo")"
+  info "Growing worktree pool: adding $size slot(s)..."
+  verbose_info "Pool: $pool"
+  verbose_info "Base ref: $base_ref"
+  verbose_info "Git hooks: $(hook_strategy "$repo")"
 
   local i slot
   for ((i = 1; i <= size; i++)); do
     slot="$(next_free_slot_path "$pool")"
-    info "  - $(basename "$slot"): creating detached worktree at $slot"
+    verbose_info "Creating detached worktree $(basename "$slot") at $slot"
     run_logged "Creating detached worktree $(basename "$slot")..." \
       git_wt "$repo" -C "$repo" worktree add -q --detach "$slot" "$base_ref"
+
+    if ((warm == 0)); then
+      success "Added $(basename "$slot")"
+      continue
+    fi
 
     if ((warm)); then
       local install_cmd lockfile
       lockfile="$(lockfile_for "$slot")"
       install_cmd="$(install_command_for "$slot")"
       if [[ -z "$lockfile" ]]; then
-        info "    deps: no supported lockfile found; skipping install"
+        success "Added $(basename "$slot")"
         continue
       fi
       if [[ -z "$install_cmd" ]]; then
-        info "    deps: found $lockfile, but matching package manager is not in PATH; skipping install"
+        warning "Added $(basename "$slot"); dependencies skipped because its package manager is not in PATH"
         continue
       fi
       if [[ -d "$slot/node_modules" ]]; then
-        info "    deps: node_modules already present; skipping $install_cmd"
+        success "Added $(basename "$slot"); dependencies already ready"
       else
-        info "    deps: running $install_cmd"
+        info "Installing dependencies in $(basename "$slot")..."
         run_logged_in_dir "Installing dependencies in $(basename "$slot")..." \
           "$slot" bash -c "$install_cmd"
+        success "Added $(basename "$slot") with dependencies"
       fi
     fi
   done
@@ -1118,18 +1184,19 @@ alloc_branch() {
   local allow_dirty_slot="${7:-0}"
 
   [[ -n "$branch" ]] || die "Branch name is required. Usage: wt alloc <branch>"
-  info "Alloc requested for branch: $branch"
-  info "Pool: $pool"
-  info "Git hooks: $(hook_strategy "$repo")"
+  info "Allocating $branch..."
+  verbose_info "Alloc requested for branch: $branch"
+  verbose_info "Pool: $pool"
+  verbose_info "Git hooks: $(hook_strategy "$repo")"
 
   local branch_exists=0
   if git -C "$repo" show-ref --verify --quiet "refs/heads/$branch"; then
     branch_exists=1
   fi
   if ((branch_exists == 1)); then
-    info "Branch mode: existing local branch"
+    verbose_info "Branch mode: existing local branch"
   else
-    info "Branch mode: new local branch"
+    verbose_info "Branch mode: new local branch"
   fi
 
   if ((branch_exists == 1)); then
@@ -1144,14 +1211,15 @@ alloc_branch() {
 
   local rebase_ref="$base_ref"
   if ((base_overridden == 0)); then
-    info "Refreshing remote default branch..."
+    verbose_info "Refreshing remote default branch..."
     rebase_ref="$(fresh_default_ref "$repo")"
-    info "Remote default branch ref: $rebase_ref"
+    success "Updated ${rebase_ref#origin/} from origin"
+    verbose_info "Remote default branch ref: $rebase_ref"
     if ((branch_exists == 0)); then
       base_ref="$rebase_ref"
     fi
   else
-    info "Base override: $base_ref"
+    verbose_info "Base override: $base_ref"
   fi
 
   if ((branch_exists == 0 || base_overridden == 1)); then
@@ -1161,20 +1229,20 @@ alloc_branch() {
   local slot
   if [[ -n "$preferred_slot" ]]; then
     slot="$preferred_slot"
-    info "Using selected free slot: $(basename "$slot")"
+    success "Using selected free slot: $(basename "$slot")"
     is_free_slot_path "$slot" || die "Selected slot is not a free-N worktree: $slot"
     is_detached "$slot" || die "Selected slot is not detached: $slot"
     if ! is_clean "$slot"; then
       if ((allow_dirty_slot == 1)); then
-        info "Selected slot is dirty; continuing because this was explicitly confirmed."
+        warning "Selected slot is dirty; continuing because this was explicitly confirmed."
       else
         die "Selected slot is not clean: $slot"
       fi
     fi
   else
-    info "Looking for a clean detached free-N slot..."
+    verbose_info "Looking for a clean detached free-N slot..."
     slot="$(pick_idle_free_slot "$repo" "$pool")" || die "No clean detached free slot available. Free one first."
-    info "Using free slot: $(basename "$slot")"
+    success "Using free slot: $(basename "$slot")"
   fi
   local old_head
   old_head="$(git -C "$slot" rev-parse --verify HEAD 2>/dev/null || true)"
@@ -1183,56 +1251,58 @@ alloc_branch() {
   [[ ! -e "$target" ]] || die "Target worktree path already exists: $target"
   mkdir -p "$(dirname "$target")"
 
-  info "Moving worktree: $slot -> $target"
+  verbose_info "Moving worktree: $slot -> $target"
   run_logged "Moving worktree into branch slot..." \
     git_wt "$repo" -C "$repo" worktree move "$slot" "$target"
 
   if ((branch_exists == 1)); then
-    info "Checking out existing branch: $branch"
+    verbose_info "Checking out existing branch: $branch"
     run_logged "Checking out existing branch..." \
       git_wt "$repo" -C "$target" checkout --quiet "$branch"
-    info "Rebasing on $rebase_ref..."
+    verbose_info "Rebasing on $rebase_ref..."
     run_logged_in_dir "Rebasing on $rebase_ref..." \
       "$target" git_wt "$repo" rebase "$rebase_ref" --autostash
+    success "Rebased existing branch on $rebase_ref"
   else
-    info "Allocating branch $branch from $base_ref"
+    verbose_info "Allocating branch $branch from $base_ref"
     run_logged "Creating branch from $base_ref..." \
       git_wt "$repo" -C "$target" checkout --quiet -b "$branch" "$base_ref"
+    success "Created branch from $base_ref"
   fi
 
   local install_cmd lockfile
   install_cmd="$(install_command_for "$target")"
   lockfile="$(lockfile_for "$target")"
   local needs_install=0
-  info "Checking dependencies..."
+  verbose_info "Checking dependencies..."
   if [[ -z "$lockfile" ]]; then
-    info "No supported JS lockfile found; skipping dependency install."
+    success "Dependencies skipped: no supported lockfile"
   elif [[ -z "$install_cmd" ]]; then
-    info "Found $lockfile, but matching package manager is not in PATH; skipping dependency install."
+    warning "Dependencies skipped: found $lockfile, but its package manager is not in PATH"
   elif [[ ! -d "$target/node_modules" ]]; then
-    info "node_modules is missing; will run $install_cmd."
+    info "Installing dependencies with $install_cmd..."
     needs_install=1
   elif [[ -n "$old_head" && -n "$lockfile" ]] && ! git -C "$target" diff --quiet "$old_head" HEAD -- "$lockfile" >/dev/null 2>&1; then
-    info "$lockfile changed while reusing the slot; will run $install_cmd."
+    info "Installing dependencies with $install_cmd..."
     needs_install=1
   else
-    info "node_modules is present and lockfile did not change; skipping dependency install."
+    success "Dependencies already ready"
   fi
 
   if ((needs_install)); then
-    info "Installing dependencies with $install_cmd..."
     run_logged_in_dir "Installing new dependencies..." \
       "$target" bash -c "$install_cmd"
+    success "Dependencies installed"
   fi
 
   if ((branch_exists == 1)); then
-    info "Checked out: $branch"
+    success "Checked out: $branch"
   else
-    info "Allocated: $branch"
-    info "Base:    $base_ref"
+    success "Allocated: $branch"
+    verbose_info "Base:    $base_ref"
   fi
   compact_free_slots "$repo" "$pool"
-  info "Path:    $target"
+  verbose_info "Path:    $target"
   clear_worktree_rows_cache "$repo"
   if [[ "${WT_SHELL_INTEGRATION:-0}" == "1" ]]; then
     printf '__WT_ALLOCATED__\t%s\n' "$target"
@@ -1255,6 +1325,7 @@ cmd_alloc() {
 
   while (($#)); do
     case "$1" in
+      --verbose|-v) WT_VERBOSE=1 ;;
       --base)
         shift
         [[ $# -gt 0 ]] || die "--base requires a value"
@@ -1308,6 +1379,7 @@ cmd_realloc() {
 
   while (($#)); do
     case "$1" in
+      --verbose|-v) WT_VERBOSE=1 ;;
       --base)
         shift
         [[ $# -gt 0 ]] || die "--base requires a value"
@@ -1403,15 +1475,17 @@ cmd_free() {
   local query=""
   while (($#)); do
     case "$1" in
+      --verbose|-v) WT_VERBOSE=1 ;;
       --force|-f) force=1 ;;
       *) query="$1" ;;
     esac
     shift
   done
   [[ -n "$query" ]] || die "Usage: wt free <branch|worktree-query> [--force|-f]"
-  info "Free requested for: $query"
-  info "Pool: $pool"
-  info "Git hooks: $(hook_strategy "$repo")"
+  info "Freeing $query..."
+  verbose_info "Free requested for: $query"
+  verbose_info "Pool: $pool"
+  verbose_info "Git hooks: $(hook_strategy "$repo")"
 
   if [[ "$query" == "main" || "$query" == "$repo" ]]; then
     die "'main' is the primary checkout and is not part of the recyclable pool."
@@ -1419,9 +1493,9 @@ cmd_free() {
 
   local target
   target="$(pick_worktree_target "$repo" "$query")" || die "No worktree matches '$query'"
-  info "Resolved worktree: $target"
+  verbose_info "Resolved worktree: $target"
 
-  info "Checking worktree status..."
+  verbose_info "Checking worktree status..."
   ensure_clean_for_reuse \
     "$repo" \
     "$target" \
@@ -1430,29 +1504,28 @@ cmd_free() {
     "These changes will be permanently discarded before the worktree is returned to the free pool." || return 0
 
   if ! is_detached "$target"; then
-    info "Detaching HEAD before returning worktree to pool."
+    verbose_info "Detaching HEAD before returning worktree to pool."
     run_logged "Detaching worktree..." \
       git_wt "$repo" -C "$target" checkout --quiet --detach
   else
-    info "HEAD is already detached."
+    verbose_info "HEAD is already detached."
   fi
 
   if is_free_slot_path "$target"; then
-    info "Already free: $(basename "$target")"
-    info "Path: $target"
+    success "Already free: $(basename "$target")"
     return 0
   fi
 
   local free_path
   free_path="$(next_free_slot_path "$pool")"
   if [[ "$target" != "$free_path" ]]; then
-    info "Moving worktree to free slot: $free_path"
+    verbose_info "Moving worktree to free slot: $free_path"
     run_logged "Moving worktree to free slot..." \
       git_wt "$repo" -C "$repo" worktree move "$target" "$free_path"
   fi
 
-  info "Freed to: $(basename "$free_path")"
-  info "Path: $free_path"
+  success "Freed to: $(basename "$free_path")"
+  verbose_info "Path: $free_path"
   clear_worktree_rows_cache "$repo"
   if [[ "${WT_SHELL_INTEGRATION:-0}" == "1" ]]; then
     printf '__WT_FREED__\t%s\t%s\n' "$target" "$free_path"
@@ -1468,6 +1541,7 @@ cmd_remove() {
   local query=""
   while (($#)); do
     case "$1" in
+      --verbose|-v) WT_VERBOSE=1 ;;
       --force|-f) force=1 ;;
       --yes|-y) yes=1 ;;
       *) query="$1" ;;
@@ -1539,13 +1613,13 @@ cmd_help() {
 wt - recycled git worktree pool helper
 
 Usage:
-  wt (interactive picker)
-  wt grow [--size N] [--base REF] [--warm]
-  wt alloc [branch] [--base REF]
-  wt realloc <query> [branch] [--base REF] [--force|-f] [--yes]
+  wt [--verbose|-v] (interactive picker)
+  wt grow [--size N] [--base REF] [--warm] [--verbose]
+  wt alloc [branch] [--base REF] [--verbose]
+  wt realloc <query> [branch] [--base REF] [--force|-f] [--yes] [--verbose]
   wt go <query> [--print-path]
   wt list
-  wt free <query> [--force|-f]
+  wt free <query> [--force|-f] [--verbose]
   wt remove <query> [--force|-f] [--yes]
   wt update
 
@@ -1558,10 +1632,15 @@ Behavior:
   - remove: deletes a pool worktree after confirmation; main is protected.
   - update: downloads the latest installer from GitHub and reinstalls wt.
   - go: prints a path normally; with shell integration, changes directory.
+  - --verbose: shows command output and implementation details for troubleshooting.
 EOF
 }
 
 main() {
+  while [[ "${1:-}" == "--verbose" || "${1:-}" == "-v" ]]; do
+    WT_VERBOSE=1
+    shift
+  done
   local cmd="${1:-interactive}"
   if [[ $# -gt 0 ]]; then
     shift
