@@ -28,13 +28,18 @@ Optional:
 
 ## Output
 
-Mutating commands keep successful default output concise: they show durable
-milestones such as the selected slot, branch creation, dependency installation,
-and free-pool compaction. While a command is running in a terminal, its current
-phase is shown temporarily and cleared when it completes.
+Mutating commands keep successful default output concise. `wt alloc` moves a
+free worktree into place immediately, so shell integration can switch to it
+right away. Fetching, checkout/rebase, dependency installation, and pool
+compaction then continue in the background.
 
-Use `--verbose` (or `-v`) to retain Git/package-manager output and path-level
-details for troubleshooting:
+While allocation is running, `wt list` shows `setup` in the status column.
+`free`, `realloc`, and `remove` are blocked until it finishes. Allocation prints
+the background log path; use it for live progress or complete failure output.
+Failed setup is shown as `failed` in `wt list` and keeps its log for diagnosis.
+
+Use `--verbose` (or `-v`) to retain detailed Git/package-manager output in the
+background setup log for troubleshooting:
 
 ```bash
 wt alloc my-feature --verbose
@@ -257,8 +262,8 @@ The main checkout is treated as the anchor checkout. It appears as `main` in
 `wt list` and `wt go main`, but it is not returned to the reusable pool.
 
 `wt alloc` refreshes from Git directly; it does not rely on local aliases.
-`wt` prints each implicit step it runs: fetch/base selection, slot selection,
-worktree moves, checkout/rebase, and dependency installation decisions.
+`wt alloc` prints the selected slot and the background log path. Its log records
+fetch/base selection, checkout/rebase, dependency installation, and compaction.
 Long-running commands are shown as phases, and their output is summarized with
 an ellipsis plus the last three lines to avoid overwhelming the terminal.
 Set `WT_COLOR=0` or `NO_COLOR=1` to disable `wt`'s colored status lines.

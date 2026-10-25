@@ -89,6 +89,18 @@ show_truncated_output() {
   printf '\n'
 }
 
+show_full_output() {
+  local file="$1"
+
+  output_header
+  if [[ -s "$file" ]]; then
+    cat "$file"
+  else
+    printf '(none)\n'
+  fi
+  printf '\n'
+}
+
 run_logged() {
   local label="$1"
   shift
@@ -108,8 +120,10 @@ run_logged() {
   if ! verbose_enabled && [[ -t 2 ]]; then
     printf '\r\033[2K' >&2
   fi
-  if verbose_enabled || ((status != 0)); then
-    ((status != 0)) && warning "Failed: $label"
+  if ((status != 0)); then
+    warning "Failed: $label"
+    show_full_output "$tmp"
+  elif verbose_enabled; then
     show_truncated_output "$tmp"
   fi
   rm -f "$tmp"
@@ -136,8 +150,10 @@ run_logged_in_dir() {
   if ! verbose_enabled && [[ -t 2 ]]; then
     printf '\r\033[2K' >&2
   fi
-  if verbose_enabled || ((status != 0)); then
-    ((status != 0)) && warning "Failed: $label"
+  if ((status != 0)); then
+    warning "Failed: $label"
+    show_full_output "$tmp"
+  elif verbose_enabled; then
     show_truncated_output "$tmp"
   fi
   rm -f "$tmp"
@@ -290,7 +306,8 @@ fresh_default_ref() {
     fi
   done
 
-  die "Could not refresh origin default branch and local master/main does not exist."
+  warning "Could not refresh origin default branch and local master/main does not exist."
+  return 1
 }
 
 pool_dir() {
@@ -321,8 +338,10 @@ stat_mtime() {
   local path="$1"
   if stat -f %m "$path" >/dev/null 2>&1; then
     stat -f %m "$path"
-  else
+  elif stat -c %Y "$path" >/dev/null 2>&1; then
     stat -c %Y "$path"
+  else
+    date +%s
   fi
 }
 
@@ -553,6 +572,67 @@ cache_key() {
   fi
 }
 
+setup_dir() {
+  printf '%s/setup\n' "$(cache_dir)"
+}
+
+setup_key() {
+  local repo="$1"
+  local wt="$2"
+  cache_key "$repo|$wt"
+}
+
+setup_state_file() {
+  local repo="$1"
+  local wt="$2"
+  printf '%s/%s.state\n' "$(setup_dir)" "$(setup_key "$repo" "$wt")"
+}
+
+setup_log_file() {
+  local repo="$1"
+  local wt="$2"
+  printf '%s/%s.log\n' "$(setup_dir)" "$(setup_key "$repo" "$wt")"
+}
+
+write_setup_state() {
+  local repo="$1"
+  local wt="$2"
+  local state="$3"
+  local file tmp
+  file="$(setup_state_file "$repo" "$wt")"
+  mkdir -p "$(setup_dir)"
+  tmp="$(mktemp "$(setup_dir)/state.XXXXXX")" || return $?
+  printf '%s\n' "$state" > "$tmp"
+  mv "$tmp" "$file"
+}
+
+setup_state() {
+  local repo="$1"
+  local wt="$2"
+  local file
+  file="$(setup_state_file "$repo" "$wt")"
+  if [[ -f "$file" ]]; then
+    head -n 1 "$file"
+  fi
+  return 0
+}
+
+clear_setup_state() {
+  local repo="$1"
+  local wt="$2"
+  rm -f "$(setup_state_file "$repo" "$wt")"
+}
+
+ensure_setup_is_finished() {
+  local repo="$1"
+  local wt="$2"
+  local state
+  state="$(setup_state "$repo" "$wt")"
+  if [[ "$state" == "running" ]]; then
+    die "Worktree '$(basename "$wt")' is still setting up. Follow: $(setup_log_file "$repo" "$wt")"
+  fi
+}
+
 worktree_rows_cache_file() {
   local repo="$1"
   printf '%s/%s.rows\n' "$(cache_dir)" "$(cache_key "$repo")"
@@ -600,6 +680,11 @@ worktree_rows_uncached() {
         break
       fi
     done
+
+    case "$(setup_state "$repo" "$path")" in
+      running) status="setup" ;;
+      failed) status="failed" ;;
+    esac
 
     local mtime mtime_h
     mtime="$(stat_mtime "$path")"
@@ -690,7 +775,7 @@ pick_idle_free_slot() {
   while IFS= read -r wt; do
     [[ -n "$wt" ]] || continue
     is_free_slot_path "$wt" || continue
-    if is_detached "$wt" && is_clean "$wt"; then
+    if is_detached "$wt" && is_clean "$wt" && [[ "$(setup_state "$repo" "$wt")" != "running" ]]; then
       local num
       num="$(basename "$wt" | sed -E "s/^${WT_FREE_PREFIX}([0-9]+)$/\\1/")"
       candidates+=("$num|$wt")
@@ -1173,99 +1258,41 @@ cmd_go() {
   go_message "$machine" "Could not find worktree containing '$query'."
   return 1
 }
-alloc_branch() {
+finish_allocation() {
   local repo="$1"
   local pool="$2"
   local branch="$3"
   local base_ref="$4"
   local base_overridden="$5"
-  local preferred_slot="${6:-}"
-  local allow_dirty_slot="${7:-0}"
-
-  [[ -n "$branch" ]] || die "Branch name is required. Usage: wt alloc <branch>"
-  info "Allocating $branch..."
-  verbose_info "Alloc requested for branch: $branch"
-  verbose_info "Pool: $pool"
-  verbose_info "Git hooks: $(hook_strategy "$repo")"
-
-  local branch_exists=0
-  if git -C "$repo" show-ref --verify --quiet "refs/heads/$branch"; then
-    branch_exists=1
-  fi
-  if ((branch_exists == 1)); then
-    verbose_info "Branch mode: existing local branch"
-  else
-    verbose_info "Branch mode: new local branch"
-  fi
-
-  if ((branch_exists == 1)); then
-    local existing_wt
-    while IFS= read -r existing_wt; do
-      [[ -n "$existing_wt" ]] || continue
-      if [[ "$(branch_name "$existing_wt")" == "$branch" ]]; then
-        die "Branch '$branch' is already checked out at: $existing_wt"
-      fi
-    done < <(all_worktrees "$repo")
-  fi
+  local target="$6"
+  local old_head="$7"
+  local branch_exists="$8"
 
   local rebase_ref="$base_ref"
   if ((base_overridden == 0)); then
-    verbose_info "Refreshing remote default branch..."
-    rebase_ref="$(fresh_default_ref "$repo")"
-    success "Updated ${rebase_ref#origin/} from origin"
-    verbose_info "Remote default branch ref: $rebase_ref"
+    rebase_ref="$(fresh_default_ref "$repo")" || return $?
+    success "Using base: $rebase_ref"
     if ((branch_exists == 0)); then
       base_ref="$rebase_ref"
     fi
-  else
-    verbose_info "Base override: $base_ref"
   fi
 
   if ((branch_exists == 0 || base_overridden == 1)); then
-    git -C "$repo" rev-parse --verify "${base_ref}^{commit}" >/dev/null 2>&1 || die "Base ref '$base_ref' does not exist."
+    git -C "$repo" rev-parse --verify "${base_ref}^{commit}" >/dev/null 2>&1 || {
+      warning "Base ref '$base_ref' does not exist."
+      return 1
+    }
   fi
-
-  local slot
-  if [[ -n "$preferred_slot" ]]; then
-    slot="$preferred_slot"
-    success "Using selected free slot: $(basename "$slot")"
-    is_free_slot_path "$slot" || die "Selected slot is not a free-N worktree: $slot"
-    is_detached "$slot" || die "Selected slot is not detached: $slot"
-    if ! is_clean "$slot"; then
-      if ((allow_dirty_slot == 1)); then
-        warning "Selected slot is dirty; continuing because this was explicitly confirmed."
-      else
-        die "Selected slot is not clean: $slot"
-      fi
-    fi
-  else
-    verbose_info "Looking for a clean detached free-N slot..."
-    slot="$(pick_idle_free_slot "$repo" "$pool")" || die "No clean detached free slot available. Free one first."
-    success "Using free slot: $(basename "$slot")"
-  fi
-  local old_head
-  old_head="$(git -C "$slot" rev-parse --verify HEAD 2>/dev/null || true)"
-
-  local target="$pool/$branch"
-  [[ ! -e "$target" ]] || die "Target worktree path already exists: $target"
-  mkdir -p "$(dirname "$target")"
-
-  verbose_info "Moving worktree: $slot -> $target"
-  run_logged "Moving worktree into branch slot..." \
-    git_wt "$repo" -C "$repo" worktree move "$slot" "$target"
 
   if ((branch_exists == 1)); then
-    verbose_info "Checking out existing branch: $branch"
     run_logged "Checking out existing branch..." \
-      git_wt "$repo" -C "$target" checkout --quiet "$branch"
-    verbose_info "Rebasing on $rebase_ref..."
+      git_wt "$repo" -C "$target" checkout --quiet "$branch" || return $?
     run_logged_in_dir "Rebasing on $rebase_ref..." \
-      "$target" git_wt "$repo" rebase "$rebase_ref" --autostash
+      "$target" git_wt "$repo" rebase "$rebase_ref" --autostash || return $?
     success "Rebased existing branch on $rebase_ref"
   else
-    verbose_info "Allocating branch $branch from $base_ref"
     run_logged "Creating branch from $base_ref..." \
-      git_wt "$repo" -C "$target" checkout --quiet -b "$branch" "$base_ref"
+      git_wt "$repo" -C "$target" checkout --quiet -b "$branch" "$base_ref" || return $?
     success "Created branch from $base_ref"
   fi
 
@@ -1273,7 +1300,6 @@ alloc_branch() {
   install_cmd="$(install_command_for "$target")"
   lockfile="$(lockfile_for "$target")"
   local needs_install=0
-  verbose_info "Checking dependencies..."
   if [[ -z "$lockfile" ]]; then
     success "Dependencies skipped: no supported lockfile"
   elif [[ -z "$install_cmd" ]]; then
@@ -1288,7 +1314,7 @@ alloc_branch() {
 
   if ((needs_install)); then
     run_logged_in_dir "Installing dependencies with $install_cmd..." \
-      "$target" bash -c "$install_cmd"
+      "$target" bash -c "$install_cmd" || return $?
     success "Dependencies installed"
   fi
 
@@ -1296,11 +1322,88 @@ alloc_branch() {
     success "Checked out: $branch"
   else
     success "Allocated: $branch"
-    verbose_info "Base:    $base_ref"
   fi
   compact_free_slots "$repo" "$pool"
-  verbose_info "Path:    $target"
+}
+
+start_allocation_setup() {
+  local repo="$1"
+  local pool="$2"
+  local branch="$3"
+  local base_ref="$4"
+  local base_overridden="$5"
+  local target="$6"
+  local old_head="$7"
+  local branch_exists="$8"
+  local log
+  log="$(setup_log_file "$repo" "$target")"
+
+  write_setup_state "$repo" "$target" running
+  : > "$log"
+  (
+    WT_VERBOSE=1
+    if finish_allocation "$repo" "$pool" "$branch" "$base_ref" "$base_overridden" "$target" "$old_head" "$branch_exists"; then
+      clear_setup_state "$repo" "$target"
+      success "Setup complete: $branch"
+    else
+      local status=$?
+      write_setup_state "$repo" "$target" failed
+      warning "Setup failed: $branch (exit $status)"
+    fi
+    clear_worktree_rows_cache "$repo"
+  ) >"$log" 2>&1 < /dev/null &
+}
+
+alloc_branch() {
+  local repo="$1"
+  local pool="$2"
+  local branch="$3"
+  local base_ref="$4"
+  local base_overridden="$5"
+  local preferred_slot="${6:-}"
+  local allow_dirty_slot="${7:-0}"
+
+  [[ -n "$branch" ]] || die "Branch name is required. Usage: wt alloc <branch>"
+  info "Allocating $branch..."
+
+  local branch_exists=0
+  if git -C "$repo" show-ref --verify --quiet "refs/heads/$branch"; then
+    branch_exists=1
+  fi
+  if ((branch_exists == 1)); then
+    local existing_wt
+    while IFS= read -r existing_wt; do
+      [[ -n "$existing_wt" ]] || continue
+      if [[ "$(branch_name "$existing_wt")" == "$branch" ]]; then
+        die "Branch '$branch' is already checked out at: $existing_wt"
+      fi
+    done < <(all_worktrees "$repo")
+  fi
+
+  local slot
+  if [[ -n "$preferred_slot" ]]; then
+    slot="$preferred_slot"
+    success "Using selected free slot: $(basename "$slot")"
+    is_free_slot_path "$slot" || die "Selected slot is not a free-N worktree: $slot"
+    is_detached "$slot" || die "Selected slot is not detached: $slot"
+    if ! is_clean "$slot"; then
+      ((allow_dirty_slot == 1)) || die "Selected slot is not clean: $slot"
+    fi
+  else
+    slot="$(pick_idle_free_slot "$repo" "$pool")" || die "No clean detached free slot available. Free one first."
+    success "Using free slot: $(basename "$slot")"
+  fi
+  local old_head
+  old_head="$(git -C "$slot" rev-parse --verify HEAD 2>/dev/null || true)"
+  local target="$pool/$branch"
+  [[ ! -e "$target" ]] || die "Target worktree path already exists: $target"
+  mkdir -p "$(dirname "$target")"
+  run_logged "Creating worktree..." git_wt "$repo" -C "$repo" worktree move "$slot" "$target"
   clear_worktree_rows_cache "$repo"
+
+  start_allocation_setup "$repo" "$pool" "$branch" "$base_ref" "$base_overridden" "$target" "$old_head" "$branch_exists"
+  success "Worktree created: $branch"
+  info "Setup continues in background. Follow: $(setup_log_file "$repo" "$target")"
   if [[ "${WT_SHELL_INTEGRATION:-0}" == "1" ]]; then
     printf '__WT_ALLOCATED__\t%s\n' "$target"
   fi
@@ -1418,6 +1521,8 @@ cmd_realloc() {
   local target
   target="$(pick_worktree_target "$repo" "$query")" || die "No worktree matches '$query'"
   [[ "$target" != "$repo" ]] || die "'main' is the primary checkout and cannot be reallocated."
+  ensure_setup_is_finished "$repo" "$target"
+  clear_setup_state "$repo" "$target"
   if is_free_slot_path "$target"; then
     die "Worktree is already free. Use wt alloc <branch> instead."
   fi
@@ -1490,6 +1595,8 @@ cmd_free() {
 
   local target
   target="$(pick_worktree_target "$repo" "$query")" || die "No worktree matches '$query'"
+  ensure_setup_is_finished "$repo" "$target"
+  clear_setup_state "$repo" "$target"
   verbose_info "Resolved worktree: $target"
 
   verbose_info "Checking worktree status..."
@@ -1555,6 +1662,8 @@ cmd_remove() {
 
   local target
   target="$(pick_worktree_target "$repo" "$query")" || die "No worktree matches '$query'"
+  ensure_setup_is_finished "$repo" "$target"
+  clear_setup_state "$repo" "$target"
   info "Resolved worktree: $target"
 
   info "Checking worktree status..."
@@ -1622,14 +1731,14 @@ Usage:
 
 Behavior:
   - grow: adds new detached free-N slots to the reusable pool.
-  - alloc: uses a free worktree for a new/existing branch and closes free-N gaps.
+  - alloc: creates the worktree immediately; checkout/rebase/dependencies continue in background.
   - realloc: frees a selected worktree, then allocates a branch into that same slot.
-  - list: shows in-use worktrees by recency, then free slots lexicographically.
+  - list: shows in-use worktrees by recency, then free slots lexicographically; setup/failed marks async allocation state.
   - free: detaches HEAD and renames worktree to smallest available free-N.
   - remove: deletes a pool worktree after confirmation; main is protected.
   - update: downloads the latest installer from GitHub and reinstalls wt.
   - go: prints a path normally; with shell integration, changes directory.
-  - --verbose: shows command output and implementation details for troubleshooting.
+  - --verbose: records detailed background setup output in the allocation log.
 EOF
 }
 

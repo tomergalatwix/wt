@@ -33,6 +33,7 @@ fi
 git -C "$REPO" worktree add -q "$root/dirty-realloc" -b dirty-realloc origin/master
 printf 'carry\n' >> "$root/dirty-realloc/README.md"
 (cd "$REPO" && "$WT_BIN" realloc "$root/dirty-realloc" feature/dirty-realloc --yes -f > "$root/realloc-force.log" 2>&1)
+wait_for_setup "$REPO" "$root/repo-worktrees/feature/dirty-realloc" feature/dirty-realloc
 assert_contains 'Changed files:' "$root/realloc-force.log"
 assert_contains 'discarding changes because --force/-f was provided' "$root/realloc-force.log"
 assert_not_match '^Output:$' "$root/realloc-force.log"

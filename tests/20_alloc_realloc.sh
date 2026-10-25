@@ -10,9 +10,10 @@ create_repo_fixture "$root"
   "$WT_BIN" grow > "$root/grow.log"
   "$WT_BIN" alloc feature/alloc > "$root/alloc.log" 2>&1
 )
+wait_for_setup "$REPO" "$root/repo-worktrees/feature/alloc" feature/alloc
 assert_not_contains '__WT_ALLOCATED__' "$root/alloc.log"
-assert_contains 'Updated master from origin' "$root/alloc.log"
-assert_contains 'Allocated: feature/alloc' "$root/alloc.log"
+assert_contains 'Worktree created: feature/alloc' "$root/alloc.log"
+assert_contains 'Setup continues in background.' "$root/alloc.log"
 assert_eq 'feature/alloc' "$(git -C "$root/repo-worktrees/feature/alloc" branch --show-current)"
 
 if (cd "$REPO" && "$WT_BIN" create old-name > "$root/create.log" 2>&1); then
@@ -26,6 +27,7 @@ git -C "$REPO" worktree add -q "$root/external-old" -b external-old origin/maste
   "$WT_BIN" realloc "$root/external-old" feature/realloc --yes > "$root/realloc.log"
 )
 new_path="$root/repo-worktrees/feature/realloc"
+wait_for_setup "$REPO" "$new_path" feature/realloc
 test -d "$new_path"
 assert_eq 'feature/realloc' "$(git -C "$new_path" branch --show-current)"
 if git -C "$REPO" worktree list --porcelain | grep -q "worktree $root/external-old"; then
@@ -50,13 +52,15 @@ create_repo_fixture "$direct_root"
   "$WT_BIN" grow --size 3 > "$direct_root/direct-grow.log"
   "$WT_BIN" alloc feature/direct > "$direct_root/direct-alloc.log" 2>&1
 )
+wait_for_setup "$REPO" "$direct_root/repo-worktrees/feature/direct" feature/direct
+direct_setup_log="$(setup_log_from_alloc_output "$direct_root/direct-alloc.log")"
 test -d "$direct_root/repo-worktrees/feature/direct"
 test -d "$direct_root/repo-worktrees/free-1"
 test -d "$direct_root/repo-worktrees/free-2"
 test ! -e "$direct_root/repo-worktrees/free-3"
 assert_eq 'feature/direct' "$(git -C "$direct_root/repo-worktrees/feature/direct" branch --show-current)"
 assert_contains 'Using free slot: free-1' "$direct_root/direct-alloc.log"
-assert_contains 'Compacted free pool: free-2..free-3 -> free-1..free-2' "$direct_root/direct-alloc.log"
+assert_contains 'Compacted free pool: free-2..free-3 -> free-1..free-2' "$direct_setup_log"
 assert_not_contains 'Closing free slot gap:' "$direct_root/direct-alloc.log"
 assert_not_match '^Output:$' "$direct_root/direct-alloc.log"
 assert_not_match '^\(none\)$' "$direct_root/direct-alloc.log"
@@ -68,13 +72,15 @@ create_repo_fixture "$gap_root"
   "$WT_BIN" grow --size 3 > "$gap_root/gap-grow.log"
   "$WT_BIN" alloc --slot "$gap_root/repo-worktrees/free-2" feature/gap > "$gap_root/gap-alloc.log" 2>&1
 )
+wait_for_setup "$REPO" "$gap_root/repo-worktrees/feature/gap" feature/gap
+gap_setup_log="$(setup_log_from_alloc_output "$gap_root/gap-alloc.log")"
 test -d "$gap_root/repo-worktrees/feature/gap"
 test -d "$gap_root/repo-worktrees/free-1"
 test -d "$gap_root/repo-worktrees/free-2"
 test ! -e "$gap_root/repo-worktrees/free-3"
 assert_eq 'feature/gap' "$(git -C "$gap_root/repo-worktrees/feature/gap" branch --show-current)"
 assert_contains 'Using selected free slot: free-2' "$gap_root/gap-alloc.log"
-assert_contains 'Compacted free pool: free-3 -> free-2' "$gap_root/gap-alloc.log"
+assert_contains 'Compacted free pool: free-3 -> free-2' "$gap_setup_log"
 assert_not_contains 'Closing free slot gap:' "$gap_root/gap-alloc.log"
 assert_not_match '^Output:$' "$gap_root/gap-alloc.log"
 assert_not_match '^\(none\)$' "$gap_root/gap-alloc.log"

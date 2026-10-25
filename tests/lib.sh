@@ -101,3 +101,30 @@ create_repo_fixture_with_yarn() {
   git -C "$SRC" push -q
   git -C "$REPO" pull -q --ff-only
 }
+
+wait_for_setup() {
+  local repo="$1"
+  local worktree="$2"
+  local branch="$3"
+  local name
+  name="$(basename "$worktree")"
+  local i list_out
+
+  for ((i = 0; i < 100; i++)); do
+    list_out="$(cd "$repo" && WT_CACHE_TTL=0 "$WT_BIN" list)"
+    if grep -Eq "^${name}[[:space:]]+failed" <<<"$list_out"; then
+      fail "background setup failed for $name: $(grep -E "^${name}[[:space:]]" <<<"$list_out")"
+    fi
+    if [[ "$(git -C "$worktree" branch --show-current 2>/dev/null || true)" == "$branch" ]] &&
+      ! grep -Eq "^${name}[[:space:]]+setup" <<<"$list_out"; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  fail "timed out waiting for background setup of $name"
+}
+
+setup_log_from_alloc_output() {
+  local output="$1"
+  awk '/^Setup continues in background\. Follow: / { print $NF; exit }' "$output"
+}
