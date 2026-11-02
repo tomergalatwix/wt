@@ -62,6 +62,9 @@ template. Bare `mktemp` / `mktemp -t` on macOS ignore `TMPDIR`.
   command, appending to `${XDG_STATE_HOME:-~/.local/state}/wt/repos`; it must
   stay best-effort (never fail the command). `listall` runs outside any repo
   and prunes entries that are no longer git repos.
+  `discover` (also run by `install.sh`) seeds it from `<repo>-worktrees`
+  pools via Spotlight when `mdfind` exists, plus a depth-3 `find`; keep it
+  working without `mdfind` (Linux).
 - **Git ops inside worktrees go through `git_wt`**, which reuses the main
   checkout's Lefthook or disables hooks, so missing hook deps never block
   pool management.

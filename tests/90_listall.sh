@@ -29,8 +29,16 @@ assert_match '^free-1[[:space:]]' "$root/listall.log"
 assert_eq 2 "$(grep -c '^NAME' "$root/listall.log")"
 assert_contains '3 worktrees across 2 repos' "$root/listall.log"
 
+root_p="$(cd "$root" && pwd -P)"
+(cd "$outside" && HOME="$root_p" WT_CACHE_TTL=0 "$WT_BIN" listall > "$root/listall-home.log")
+assert_contains "repo  ~/${repo_a#"$root_p"/}" "$root/listall-home.log"
+
 (cd "$outside" && WT_COLOR=1 WT_CACHE_TTL=0 "$WT_BIN" listall > "$root/listall-color.log")
 assert_contains "$(printf '\033[1;34mrepo  %s' "$repo_a")" "$root/listall-color.log"
+
+(cd "$outside" && XDG_STATE_HOME="$root/discovered" "$WT_BIN" discover "$root" > "$root/discover.log")
+assert_contains 'Registered 1 repo(s) with worktree pools.' "$root/discover.log"
+assert_eq "$repo_a" "$(cat "$root/discovered/wt/repos")"
 
 rm -rf "$root/b"
 (cd "$outside" && WT_CACHE_TTL=0 "$WT_BIN" listall > "$root/listall-pruned.log")

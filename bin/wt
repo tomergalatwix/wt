@@ -980,6 +980,43 @@ register_repo() {
   { printf '%s\n' "$repo" >> "$file"; } 2>/dev/null || true
 }
 
+# Prints candidate pool dirs (*-worktrees) under the given roots: everything
+# Spotlight has indexed (macOS), plus a shallow scan for unindexed locations.
+find_pool_dirs() {
+  {
+    if command -v mdfind >/dev/null 2>&1; then
+      local root
+      for root in "$@"; do
+        mdfind -onlyin "$root" -name worktrees 2>/dev/null || true
+      done
+    fi
+    find "$@" -mindepth 1 -maxdepth 3 \
+      \( -name '.*' -o -name Library -o -name node_modules \) -prune \
+      -o -type d -name '*-worktrees' -print 2>/dev/null || true
+  } | while IFS= read -r dir; do
+    [[ "$dir" == *-worktrees && -d "$dir" ]] && printf '%s\n' "$dir"
+  done | LC_ALL=C sort -u
+}
+
+# Registers repos that have a default-layout pool (<repo>-worktrees) next to them.
+cmd_discover() {
+  local roots=("$@")
+  ((${#roots[@]})) || roots=("$HOME")
+
+  local found=0
+  local pool candidate repo
+  while IFS= read -r pool; do
+    candidate="${pool%-worktrees}"
+    [[ -d "$candidate" ]] || continue
+    repo="$(cd "$candidate" && repo_root 2>/dev/null)" || continue
+    [[ "$repo" == "$(cd "$candidate" && pwd -P)" ]] || continue
+    register_repo "$repo"
+    found=$((found + 1))
+  done < <(find_pool_dirs "${roots[@]}")
+
+  success "Registered $found repo(s) with worktree pools."
+}
+
 cmd_listall() {
   [[ $# -eq 0 ]] || die "Unknown option for listall: $1"
 
@@ -1024,9 +1061,10 @@ cmd_listall() {
   widths="$(printf '%s\n' "${all_rows[@]}" | worktree_table_widths)"
 
   local total=0
+  local tilde='~'
   for ((i = 0; i < ${#repos[@]}; i++)); do
     ((i == 0)) || printf '\n'
-    title "$(basename "${repos[$i]}")  ${repos[$i]/#"$HOME"/\~}"
+    title "$(basename "${repos[$i]}")  ${repos[$i]/#"$HOME"/$tilde}"
     # shellcheck disable=SC2086 # widths are two integers
     printf '%s\n' "${all_rows[$i]}" | print_worktree_table $widths
     total=$((total + $(count_rows "${all_rows[$i]}")))
@@ -1755,6 +1793,7 @@ Usage:
   wt go <query> [--print-path]
   wt list
   wt listall
+  wt discover [DIR...]
   wt free <query> [--force|-f] [--verbose]
   wt remove <query> [--force|-f] [--yes]
   wt update
@@ -1765,6 +1804,7 @@ Behavior:
   - realloc: frees a selected worktree, then allocates a branch into that same slot.
   - list: shows in-use worktrees by recency, then free slots lexicographically; setup/failed marks async allocation state.
   - listall: runs from anywhere; lists worktrees of every repo wt has been used in.
+  - discover: registers repos with a <repo>-worktrees pool up to 3 levels below DIR (default: $HOME).
   - free: detaches HEAD and renames worktree to smallest available free-N.
   - remove: deletes a pool worktree after confirmation; main is protected.
   - update: downloads the latest installer from GitHub and reinstalls wt.
@@ -1787,6 +1827,7 @@ main() {
     help|-h|--help) cmd_help; return 0 ;;
     update) cmd_update "$@"; return 0 ;;
     listall) cmd_listall "$@"; return 0 ;;
+    discover) cmd_discover "$@"; return 0 ;;
   esac
 
   local repo

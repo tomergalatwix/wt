@@ -155,6 +155,17 @@ Any `wt` command run inside a repo records it in
 blue title followed by its worktree table, and drops repos that no longer
 exist.
 
+To register repos you haven't run `wt` in yet (the installer does this too):
+
+```bash
+wt discover          # search under $HOME
+wt discover ~/code   # or specific roots
+```
+
+`discover` registers every repo that has a `<repo>-worktrees` pool next to it.
+On macOS it asks Spotlight (any depth); everywhere it also scans three levels
+deep, skipping hidden folders, `Library`, and `node_modules`.
+
 Jump to a worktree:
 
 ```bash

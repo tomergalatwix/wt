@@ -64,6 +64,7 @@ else
 fi
 
 chmod +x "$INSTALL_DIR/wt"
+"$INSTALL_DIR/wt" discover || true
 
 # shellcheck disable=SC2016 # literal $HOME is written to the rc file
 source_line='source "$HOME/.config/wt/wt.zsh"'

@@ -16,6 +16,7 @@ mkdir -p "$root/home"
 test -x "$install_dir/wt"
 test -f "$config_dir/wt.zsh"
 assert_contains 'wt installed.' "$root/install.log"
+assert_contains 'Registered 0 repo(s) with worktree pools.' "$root/install.log"
 # shellcheck disable=SC2016
 assert_contains 'source "$HOME/.config/wt/wt.zsh"' "$shell_rc"
 
