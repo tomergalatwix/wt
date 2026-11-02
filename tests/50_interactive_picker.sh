@@ -12,6 +12,7 @@ cat > "$fake_fzf" <<'FAKE_FZF'
 #!/usr/bin/env bash
 set -euo pipefail
 input="$(cat)"
+[[ " $* " == *" --cycle "* ]] || { echo "picker should wrap around" >&2; exit 49; }
 case "$*" in
   *"Choose action:"*)
     [[ "$*" == *"Esc: exit"* && "$*" == *"Backspace: back"* ]] || exit 50

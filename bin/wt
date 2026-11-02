@@ -1009,6 +1009,7 @@ cmd_interactive() {
         "$fzf_cmd" \
           --height=80% \
           --reverse \
+          --cycle \
           --expect=backspace \
           --footer='Esc: exit  |  Backspace: exit' \
           --header-lines=1 \
@@ -1060,6 +1061,7 @@ cmd_interactive() {
         "$fzf_cmd" \
           --height=10 \
           --reverse \
+          --cycle \
           --ansi \
           --expect=backspace \
           --footer='Esc: exit  |  Backspace: back' \
