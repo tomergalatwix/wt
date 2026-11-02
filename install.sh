@@ -65,16 +65,22 @@ repo_raw_base() {
 
 mkdir -p "$INSTALL_DIR" "$CONFIG_DIR"
 
+# Installs via rename so a running wt (e.g. `wt update`) keeps reading its own
+# file instead of the new one at its old offset.
+new_wt="$INSTALL_DIR/.wt.new.$$"
+new_zsh="$CONFIG_DIR/.wt.zsh.new.$$"
+trap 'rm -f "$new_wt" "$new_zsh"' EXIT
 if install_from_local_repo; then
-  cp "$SCRIPT_DIR/bin/wt" "$INSTALL_DIR/wt"
-  cp "$SCRIPT_DIR/shell/wt.zsh" "$CONFIG_DIR/wt.zsh"
+  cp "$SCRIPT_DIR/bin/wt" "$new_wt"
+  cp "$SCRIPT_DIR/shell/wt.zsh" "$new_zsh"
 else
   raw_base="$(repo_raw_base)"
-  download_file "$raw_base/bin/wt" "$INSTALL_DIR/wt"
-  download_file "$raw_base/shell/wt.zsh" "$CONFIG_DIR/wt.zsh"
+  download_file "$raw_base/bin/wt" "$new_wt"
+  download_file "$raw_base/shell/wt.zsh" "$new_zsh"
 fi
-
-chmod +x "$INSTALL_DIR/wt"
+chmod +x "$new_wt"
+mv -f "$new_wt" "$INSTALL_DIR/wt"
+mv -f "$new_zsh" "$CONFIG_DIR/wt.zsh"
 "$INSTALL_DIR/wt" discover || true
 
 # shellcheck disable=SC2016 # literal $HOME is written to the rc file
@@ -83,6 +89,7 @@ source_line='source "$HOME/.config/wt/wt.zsh"'
 path_line='export PATH="$PATH:$HOME/.local/bin"'
 
 touch "$SHELL_RC"
+rc_changed=0
 
 # shellcheck disable=SC2016
 if ! grep -Fq '$HOME/.local/bin' "$SHELL_RC"; then
@@ -91,6 +98,7 @@ if ! grep -Fq '$HOME/.local/bin' "$SHELL_RC"; then
     echo "# wt"
     echo "$path_line"
   } >>"$SHELL_RC"
+  rc_changed=1
 fi
 
 if ! grep -Fq "$source_line" "$SHELL_RC"; then
@@ -99,6 +107,7 @@ if ! grep -Fq "$source_line" "$SHELL_RC"; then
     echo "# wt shell integration"
     echo "$source_line"
   } >>"$SHELL_RC"
+  rc_changed=1
 fi
 
 if ! command -v fzf >/dev/null 2>&1; then
@@ -116,11 +125,13 @@ wt installed.
 
 Binary: $INSTALL_DIR/wt
 Shell integration: $CONFIG_DIR/wt.zsh
+EOF
 
-Reload your shell:
-  source "$SHELL_RC"
+if ((rc_changed)); then
+  cat <<EOF
 
-Try:
+Added wt to $SHELL_RC. Open a new terminal (or run: exec zsh), then try:
   wt
   wt list
 EOF
+fi

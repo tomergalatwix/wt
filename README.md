@@ -54,14 +54,14 @@ install dependencies.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tomergalatwix/wt/master/install.sh | bash
-source ~/.zshrc
+exec zsh   # first install only, or open a new terminal
 ```
 
 From a local clone:
 
 ```bash
 ./install.sh
-source ~/.zshrc
+exec zsh   # first install only, or open a new terminal
 ```
 
 The installer:
@@ -427,7 +427,7 @@ management.
 <summary><b>Do I need to reload my shell after <code>wt update</code>?</b></summary>
 
 No. The wrapper re-sources `~/.config/wt/wt.zsh` on the next `wt` call when the
-file changed. You only need `source ~/.zshrc` once, after the first install.
+file changed. Only the first install needs a new terminal (or `exec zsh`).
 
 </details>
 

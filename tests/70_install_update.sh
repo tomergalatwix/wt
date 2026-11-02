@@ -18,6 +18,7 @@ test -x "$install_dir/wt"
 test -f "$config_dir/wt.zsh"
 assert_contains 'wt installed.' "$root/install.log"
 assert_contains 'Registered 0 repo(s) with worktree pools.' "$root/install.log"
+assert_contains "Added wt to $shell_rc" "$root/install.log"
 # shellcheck disable=SC2016
 assert_contains 'source "$HOME/.config/wt/wt.zsh"' "$shell_rc"
 
@@ -37,6 +38,26 @@ PATH="$install_dir:$PATH" WT_REPO_REF="$sha" WT_REPO_RAW_ROOT="file://$raw_root"
 assert_contains "Downloading installer from: file://$raw_root/$sha/install.sh" "$root/update-sha.log"
 assert_contains 'wt installed.' "$root/update-sha.log"
 assert_contains 'Registered 0 repo(s) with worktree pools.' "$root/update.log"
+assert_not_contains 'Added wt to' "$root/update.log"
+assert_not_contains 'source' "$root/update.log"
+
+# Updating replaces the running script; it must not read the new file at its
+# old offset (that ran fragments of the new file as commands).
+shifted="$root/shifted"
+mkdir -p "$shifted/bin" "$shifted/shell"
+cp "$WT_REPO_ROOT/install.sh" "$shifted/install.sh"
+cp "$WT_REPO_ROOT/shell/wt.zsh" "$shifted/shell/wt.zsh"
+{
+  sed -n 1p "$WT_REPO_ROOT/bin/wt"
+  for _ in {1..300}; do echo '# padding that shifts every offset'; done
+  sed 1d "$WT_REPO_ROOT/bin/wt"
+} > "$shifted/bin/wt"
+cp "$WT_REPO_ROOT/bin/wt" "$install_dir/wt"
+PATH="$install_dir:$PATH" WT_REPO_RAW_BASE="file://$shifted" WT_INSTALL_DIR="$install_dir" WT_CONFIG_DIR="$config_dir" WT_SHELL_RC="$shell_rc" "$install_dir/wt" update > "$root/update-shift.log" 2>&1
+assert_contains 'wt installed.' "$root/update-shift.log"
+assert_not_contains 'command not found' "$root/update-shift.log"
+assert_not_contains 'syntax error' "$root/update-shift.log"
+cmp -s "$shifted/bin/wt" "$install_dir/wt" || fail 'update did not install the new binary'
 
 "$WT_REPO_ROOT/bin/wt" version > "$root/version.log"
 assert_contains 'wt dev' "$root/version.log"
