@@ -113,7 +113,7 @@ wait_for_setup() {
   local i list_out
 
   for ((i = 0; i < 100; i++)); do
-    list_out="$(cd "$repo" && WT_CACHE_TTL=0 "$WT_BIN" list)"
+    list_out="$(cd "$repo" && "$WT_BIN" list)"
     if grep -Eq "^${name}[[:space:]]+failed" <<<"$list_out"; then
       fail "background setup failed for $name: $(grep -E "^${name}[[:space:]]" <<<"$list_out")"
     fi

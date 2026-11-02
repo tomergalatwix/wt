@@ -6,7 +6,6 @@ WT_REPO_URL="${WT_REPO_URL:-https://github.com/tomergalatwix/wt.git}"
 WT_REPO_REF="${WT_REPO_REF:-master}"
 WT_REPO_RAW_ROOT="${WT_REPO_RAW_ROOT:-https://raw.githubusercontent.com/tomergalatwix/wt}"
 WT_REPO_RAW_BASE="${WT_REPO_RAW_BASE:-}"
-WT_CACHE_TTL="${WT_CACHE_TTL:-300}"
 WT_VERBOSE="${WT_VERBOSE:-0}"
 
 die() {
@@ -222,14 +221,16 @@ main_lefthook_bin() {
   local candidate
   for candidate in \
     "$repo/node_modules/.bin/lefthook" \
-    "$repo/node_modules/lefthook/bin/index.js" \
-    "$repo/node_modules/lefthook-$(uname | tr '[:upper:]' '[:lower:]')-$(uname -m | sed 's/aarch64/arm64/;s/x86_64/x64/')/bin/lefthook"; do
+    "$repo/node_modules/lefthook/bin/index.js"; do
     [[ -x "$candidate" || -f "$candidate" ]] && {
       printf '%s\n' "$candidate"
       return 0
     }
   done
-  return 1
+  [[ -d "$repo/node_modules" ]] || return 1
+  candidate="$repo/node_modules/lefthook-$(uname | tr '[:upper:]' '[:lower:]')-$(uname -m | sed 's/aarch64/arm64/;s/x86_64/x64/')/bin/lefthook"
+  [[ -x "$candidate" || -f "$candidate" ]] || return 1
+  printf '%s\n' "$candidate"
 }
 
 git_wt() {
@@ -353,75 +354,9 @@ branch_name() {
   git -C "$wt" symbolic-ref --quiet --short HEAD 2>/dev/null || echo "(detached HEAD)"
 }
 
-stat_mtime() {
-  local path="$1"
-  if stat -f %m "$path" >/dev/null 2>&1; then
-    stat -f %m "$path"
-  elif stat -c %Y "$path" >/dev/null 2>&1; then
-    stat -c %Y "$path"
-  else
-    date +%s
-  fi
-}
 
-format_mtime() {
-  local epoch="$1"
-  if date -r "$epoch" "+%Y-%m-%d %H:%M" >/dev/null 2>&1; then
-    date -r "$epoch" "+%Y-%m-%d %H:%M"
-  else
-    date -d "@$epoch" "+%Y-%m-%d %H:%M"
-  fi
-}
 
-wt_name() {
-  local repo="$1"
-  local wt="$2"
-  if [[ "$wt" == "$repo" ]]; then
-    echo "main"
-  else
-    basename "$wt"
-  fi
-}
 
-relative_from_epoch() {
-  local epoch="$1"
-  local now diff value unit
-  now="$(date +%s)"
-  diff=$((now - epoch))
-  ((diff < 0)) && diff=0
-
-  if ((diff < 10)); then
-    echo "just now"
-    return 0
-  elif ((diff < 60)); then
-    value=$diff
-    unit="sec"
-  elif ((diff < 3600)); then
-    value=$((diff / 60))
-    unit="min"
-  elif ((diff < 86400)); then
-    value=$((diff / 3600))
-    unit="hour"
-  elif ((diff < 604800)); then
-    value=$((diff / 86400))
-    unit="day"
-  elif ((diff < 2592000)); then
-    value=$((diff / 604800))
-    unit="week"
-  elif ((diff < 31536000)); then
-    value=$((diff / 2592000))
-    unit="month"
-  else
-    value=$((diff / 31536000))
-    unit="year"
-  fi
-
-  if ((value == 1)); then
-    echo "1 $unit ago"
-  else
-    echo "$value ${unit}s ago"
-  fi
-}
 
 install_command_for() {
   local wt="$1"
@@ -497,7 +432,7 @@ all_pool_worktrees() {
 
 all_worktree_records() {
   local repo="$1"
-  git_wt "$repo" -C "$repo" worktree list --porcelain |
+  git -C "$repo" worktree list --porcelain |
     awk -v repo="$repo" '
       function emit() {
         if (path == "") {
@@ -540,76 +475,83 @@ all_worktrees() {
   all_worktree_records "$repo" | cut -d'|' -f1
 }
 
-cache_ttl() {
-  local ttl="$WT_CACHE_TTL"
-  if [[ ! "$ttl" =~ ^[0-9]+$ ]]; then
-    ttl=10
-  fi
-  printf '%s\n' "$ttl"
-}
-
-cache_dir() {
-  printf '%s/wt\n' "${XDG_CACHE_HOME:-$HOME/.cache}"
-}
-
-cache_key() {
-  local value="$1"
-  if command -v shasum >/dev/null 2>&1; then
-    printf '%s' "$value" | shasum -a 1 | awk '{ print $1 }'
-  else
-    printf '%s' "$value" | cksum | awk '{ print $1 }'
-  fi
-}
-
+# Setup state and logs live in the state dir, one file per worktree, named by
+# the worktree path with "%" and "/" escaped (no hashing, so no forks).
 setup_dir() {
-  printf '%s/setup\n' "$(cache_dir)"
+  printf '%s/wt/setup\n' "${XDG_STATE_HOME:-$HOME/.local/state}"
 }
 
-setup_key() {
-  local repo="$1"
-  local wt="$2"
-  cache_key "$repo|$wt"
+# Sets REPLY to the state/log path for a worktree, minus the extension.
+setup_file_stem() {
+  local stem="${1//%/%25}"
+  REPLY="${XDG_STATE_HOME:-$HOME/.local/state}/wt/setup/${stem//\//%2F}"
 }
 
 setup_state_file() {
-  local repo="$1"
-  local wt="$2"
-  printf '%s/%s.state\n' "$(setup_dir)" "$(setup_key "$repo" "$wt")"
+  setup_file_stem "$2"
+  printf '%s.state\n' "$REPLY"
 }
 
 setup_log_file() {
-  local repo="$1"
-  local wt="$2"
-  printf '%s/%s.log\n' "$(setup_dir)" "$(setup_key "$repo" "$wt")"
+  setup_file_stem "$2"
+  printf '%s.log\n' "$REPLY"
 }
 
+# State file format: "<state> [<pid>]".
 write_setup_state() {
   local repo="$1"
   local wt="$2"
   local state="$3"
+  local pid="${4:-}"
   local file tmp
   file="$(setup_state_file "$repo" "$wt")"
   mkdir -p "$(setup_dir)"
   tmp="$(mktemp "$(setup_dir)/state.XXXXXX")" || return $?
-  printf '%s\n' "$state" > "$tmp"
+  printf '%s %s\n' "$state" "$pid" > "$tmp"
   mv "$tmp" "$file"
 }
 
-setup_state() {
-  local repo="$1"
-  local wt="$2"
-  local file
-  file="$(setup_state_file "$repo" "$wt")"
-  if [[ -f "$file" ]]; then
-    head -n 1 "$file"
+# Sets REPLY to running, failed, or empty. A "running" setup whose process is
+# gone (terminal closed, reboot) reads as failed so it never blocks the slot.
+read_setup_state() {
+  local file="$1"
+  local state="" pid=""
+  REPLY=""
+  [[ -f "$file" ]] || return 0
+  read -r state pid < "$file" || true
+  if [[ "$state" == "running" && -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+    state="failed"
   fi
-  return 0
+  REPLY="$state"
+}
+
+setup_state() {
+  read_setup_state "$(setup_state_file "$1" "$2")"
+  printf '%s\n' "$REPLY"
 }
 
 clear_setup_state() {
   local repo="$1"
   local wt="$2"
   rm -f "$(setup_state_file "$repo" "$wt")"
+}
+
+# Removes a worktree's setup state and log, plus any left behind by worktrees
+# that no longer exist (e.g. removed with plain git).
+forget_setup_files() {
+  local wt="$1"
+  setup_file_stem "$wt"
+  local files=("$REPLY.state" "$REPLY.log")
+  local file stem path
+  for file in "$(setup_dir)"/*.state "$(setup_dir)"/*.log; do
+    [[ -e "$file" ]] || continue
+    stem="${file##*/}"
+    stem="${stem%.*}"
+    path="${stem//"%2F"/\/}"
+    path="${path//"%25"/%}"
+    [[ -e "$path" ]] || files+=("$file")
+  done
+  rm -f "${files[@]}"
 }
 
 ensure_setup_is_finished() {
@@ -622,84 +564,113 @@ ensure_setup_is_finished() {
   fi
 }
 
-worktree_rows_cache_file() {
-  local repo="$1"
-  printf '%s/%s.metadata.rows\n' "$(cache_dir)" "$(cache_key "$repo")"
+# Seconds since the epoch, read once per wt process.
+WT_NOW=""
+now_epoch() {
+  [[ -n "$WT_NOW" ]] || WT_NOW="$(date +%s)"
+  REPLY="$WT_NOW"
 }
 
-clear_worktree_rows_cache() {
-  local repo="$1"
-  rm -f "$(worktree_rows_cache_file "$repo")"
+# Sets REPLY to a short "N units ago" label.
+relative_time() {
+  local diff=$(($2 - $1))
+  local value unit
+  ((diff < 0)) && diff=0
+
+  if ((diff < 10)); then
+    REPLY="just now"
+    return 0
+  elif ((diff < 60)); then
+    value=$diff
+    unit="sec"
+  elif ((diff < 3600)); then
+    value=$((diff / 60))
+    unit="min"
+  elif ((diff < 86400)); then
+    value=$((diff / 3600))
+    unit="hour"
+  elif ((diff < 604800)); then
+    value=$((diff / 86400))
+    unit="day"
+  elif ((diff < 2592000)); then
+    value=$((diff / 604800))
+    unit="week"
+  elif ((diff < 31536000)); then
+    value=$((diff / 2592000))
+    unit="month"
+  else
+    value=$((diff / 31536000))
+    unit="year"
+  fi
+
+  if ((value == 1)); then
+    REPLY="1 $unit ago"
+  else
+    REPLY="$value ${unit}s ago"
+  fi
 }
 
-worktree_rows_uncached() {
-  local repo="$1"
-  local records=()
-  local record path rest branch name
-
-  while IFS= read -r record; do
-    [[ -n "$record" ]] || continue
-    records+=("$record")
-  done < <(all_worktree_records "$repo")
-
-  for record in "${records[@]}"; do
-    path="${record%%|*}"
-    rest="${record#*|}"
-    branch="${rest%%|*}"
-    name="${rest#*|}"
-
-    local status="-"
-
-    case "$(setup_state "$repo" "$path")" in
-      running) status="setup" ;;
-      failed) status="failed" ;;
-    esac
-
-    local mtime mtime_h
-    mtime="$(stat_mtime "$path")"
-    mtime_h="$(relative_from_epoch "$mtime")"
-    printf '%s|%s|%s|%s|%s|%s\n' "$mtime" "$name" "$status" "$mtime_h" "$branch" "$path"
-  done
+# Prints "<epoch> <path>" for each existing path, in argument order, with one
+# stat call.
+path_mtimes() {
+  (($#)) || return 0
+  if [[ "$OSTYPE" == darwin* || "$OSTYPE" == *bsd* ]]; then
+    stat -f '%m %N' -- "$@" 2>/dev/null || true
+  else
+    stat -c '%Y %n' -- "$@" 2>/dev/null || true
+  fi
 }
 
+# Prints "mtime|name|status|modified|branch|path" per worktree. Always reads
+# live git state; the cost is a fixed handful of processes per repo, not per
+# worktree.
 worktree_rows() {
   local repo="$1"
-  local ttl file now mtime age dir tmp
+  local paths=() branches=() names=()
+  local record rest
+  while IFS= read -r record; do
+    [[ -n "$record" ]] || continue
+    paths+=("${record%%|*}")
+    rest="${record#*|}"
+    branches+=("${rest%%|*}")
+    names+=("${rest#*|}")
+  done < <(all_worktree_records "$repo")
+  ((${#paths[@]})) || return 0
 
-  ttl="$(cache_ttl)"
-  if ((ttl == 0)); then
-    worktree_rows_uncached "$repo"
-    return 0
-  fi
+  local mtimes=()
+  local line
+  while IFS= read -r line; do
+    mtimes+=("$line")
+  done < <(path_mtimes "${paths[@]}")
 
-  file="$(worktree_rows_cache_file "$repo")"
-  if [[ -f "$file" ]]; then
-    now="$(date +%s)"
-    mtime="$(stat_mtime "$file")"
-    age=$((now - mtime))
-    if ((age >= 0 && age <= ttl)); then
-      cat "$file"
-      return 0
+  local now
+  now_epoch
+  now="$REPLY"
+
+  local i j=0 mtime status
+  for ((i = 0; i < ${#paths[@]}; i++)); do
+    mtime="$now"
+    if ((j < ${#mtimes[@]})) && [[ "${mtimes[$j]#* }" == "${paths[$i]}" ]]; then
+      mtime="${mtimes[$j]%% *}"
+      j=$((j + 1))
     fi
-  fi
 
-  dir="$(cache_dir)"
-  mkdir -p "$dir" 2>/dev/null || {
-    worktree_rows_uncached "$repo"
-    return 0
-  }
-  tmp="$(mktemp "$dir/rows.XXXXXX")" || {
-    worktree_rows_uncached "$repo"
-    return 0
-  }
-  worktree_rows_uncached "$repo" > "$tmp"
-  mv "$tmp" "$file"
-  cat "$file"
+    setup_file_stem "${paths[$i]}"
+    read_setup_state "$REPLY.state"
+    case "$REPLY" in
+      running) status="setup" ;;
+      failed) status="failed" ;;
+      *) status="-" ;;
+    esac
+
+    relative_time "$mtime" "$now"
+    printf '%s|%s|%s|%s|%s|%s\n' "$mtime" "${names[$i]}" "$status" "$REPLY" "${branches[$i]}" "${paths[$i]}"
+  done
 }
 
 is_free_slot_path() {
   local path="$1"
-  [[ "$(basename "$path")" =~ ^${WT_FREE_PREFIX}[0-9]+$ ]]
+  [[ "${path##*/}" =~ ^${WT_FREE_PREFIX}[0-9]+$ ]]
 }
 
 sort_worktree_rows() {
@@ -921,7 +892,6 @@ cmd_grow() {
       fi
     fi
   done
-  clear_worktree_rows_cache "$repo"
 }
 
 cmd_list() {
@@ -986,7 +956,12 @@ register_repo() {
   local repo="$1"
   local file
   file="$(repos_registry_file)"
-  [[ -f "$file" ]] && grep -Fxq -- "$repo" "$file" && return 0
+  local line
+  if [[ -f "$file" ]]; then
+    while IFS= read -r line; do
+      [[ "$line" == "$repo" ]] && return 0
+    done < "$file"
+  fi
   mkdir -p "$(dirname "$file")" 2>/dev/null || return 0
   { printf '%s\n' "$repo" >> "$file"; } 2>/dev/null || true
 }
@@ -1048,7 +1023,7 @@ load_registered_repos() {
   if [[ -f "$file" ]]; then
     while IFS= read -r repo; do
       [[ -n "$repo" ]] || continue
-      if git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+      if [[ -e "$repo/.git" ]]; then
         LISTALL_REPOS+=("$repo")
       else
         stale=1
@@ -1068,16 +1043,25 @@ load_registered_repos() {
 
   ((${#LISTALL_REPOS[@]})) || return 0
 
+  now_epoch
   local stats=()
-  local i
+  local i rows row count newest mtime
   for ((i = 0; i < ${#LISTALL_REPOS[@]}; i++)); do
-    LISTALL_ROWS+=("$(worktree_rows "${LISTALL_REPOS[$i]}")")
-    # "<worktree count>|<newest mtime>|<index>"
-    stats+=("$(printf '%s\n' "${LISTALL_ROWS[$i]}" |
-      awk -F'|' 'NF { c++; if ($1 > m) m = $1 } END { printf "%d|%d", c, m }')|$i")
+    rows="$(worktree_rows "${LISTALL_REPOS[$i]}")"
+    LISTALL_ROWS+=("$rows")
+    count=0
+    newest=0
+    while IFS= read -r row; do
+      [[ -n "$row" ]] || continue
+      count=$((count + 1))
+      mtime="${row%%|*}"
+      if ((mtime > newest)); then
+        newest="$mtime"
+      fi
+    done <<<"$rows"
+    stats+=("$count|$newest|$i")
   done
 
-  local count
   while IFS='|' read -r count _ i; do
     LISTALL_ORDER+=("$count|$i")
   done < <(printf '%s\n' "${stats[@]}" | LC_ALL=C sort -t'|' -k1,1nr -k2,2nr)
@@ -1116,7 +1100,7 @@ cmd_listall() {
     i="${entry#*|}"
     ((first)) || printf '\n'
     first=0
-    title "$(basename "${LISTALL_REPOS[$i]}")  ${LISTALL_REPOS[$i]/#"$HOME"/$tilde}"
+    title "${LISTALL_REPOS[$i]##*/}  ${LISTALL_REPOS[$i]/#"$HOME"/$tilde}"
     # shellcheck disable=SC2086 # widths are two integers
     printf '%s\n' "${LISTALL_ROWS[$i]}" | print_worktree_table $widths
     total=$((total + count))
@@ -1529,6 +1513,8 @@ start_allocation_setup() {
   : > "$log"
   (
     WT_VERBOSE=1
+    # sh's parent is this subshell; bash 3.2 has no $BASHPID.
+    write_setup_state "$repo" "$target" running "$(sh -c 'echo $PPID')"
     if finish_allocation "$repo" "$pool" "$branch" "$base_ref" "$base_overridden" "$target" "$old_head" "$branch_exists"; then
       clear_setup_state "$repo" "$target"
       success "Setup complete: $branch"
@@ -1537,8 +1523,20 @@ start_allocation_setup() {
       write_setup_state "$repo" "$target" failed
       warning "Setup failed: $branch (exit $status)"
     fi
-    clear_worktree_rows_cache "$repo"
   ) >"$log" 2>&1 < /dev/null &
+
+  # Return once the setup has recorded its pid, so a crash can't leave a
+  # pid-less "running" state that blocks the slot forever.
+  local state_file state pid i
+  state_file="$(setup_state_file "$repo" "$target")"
+  for ((i = 0; i < 100; i++)); do
+    state="" pid=""
+    if [[ -f "$state_file" ]]; then
+      read -r state pid < "$state_file" || true
+    fi
+    [[ "$state" == "running" && -z "$pid" ]] || return 0
+    sleep 0.02
+  done
 }
 
 alloc_branch() {
@@ -1586,7 +1584,6 @@ alloc_branch() {
   [[ ! -e "$target" ]] || die "Target worktree path already exists: $target"
   mkdir -p "$(dirname "$target")"
   run_logged "Creating worktree..." git_wt "$repo" -C "$repo" worktree move "$slot" "$target"
-  clear_worktree_rows_cache "$repo"
 
   start_allocation_setup "$repo" "$pool" "$branch" "$base_ref" "$base_overridden" "$target" "$old_head" "$branch_exists"
   success "Worktree created: $branch"
@@ -1709,7 +1706,7 @@ cmd_realloc() {
   target="$(pick_worktree_target "$repo" "$query")" || die "No worktree matches '$query'"
   [[ "$target" != "$repo" ]] || die "'main' is the primary checkout and cannot be reallocated."
   ensure_setup_is_finished "$repo" "$target"
-  clear_setup_state "$repo" "$target"
+  forget_setup_files "$target"
   if is_free_slot_path "$target"; then
     die "Worktree is already free. Use wt alloc <branch> instead."
   fi
@@ -1783,7 +1780,7 @@ cmd_free() {
   local target
   target="$(pick_worktree_target "$repo" "$query")" || die "No worktree matches '$query'"
   ensure_setup_is_finished "$repo" "$target"
-  clear_setup_state "$repo" "$target"
+  forget_setup_files "$target"
   verbose_info "Resolved worktree: $target"
 
   verbose_info "Checking worktree status..."
@@ -1817,7 +1814,6 @@ cmd_free() {
 
   success "Freed to: $(basename "$free_path")"
   verbose_info "Path: $free_path"
-  clear_worktree_rows_cache "$repo"
   if [[ "${WT_SHELL_INTEGRATION:-0}" == "1" ]]; then
     printf '__WT_FREED__\t%s\t%s\n' "$target" "$free_path"
   fi
@@ -1850,7 +1846,7 @@ cmd_remove() {
   local target
   target="$(pick_worktree_target "$repo" "$query")" || die "No worktree matches '$query'"
   ensure_setup_is_finished "$repo" "$target"
-  clear_setup_state "$repo" "$target"
+  forget_setup_files "$target"
   info "Resolved worktree: $target"
 
   info "Checking worktree status..."
@@ -1887,7 +1883,6 @@ cmd_remove() {
   fi
   info "Removed: $(basename "$target")"
   info "Path: $target"
-  clear_worktree_rows_cache "$repo"
 }
 
 cmd_update() {

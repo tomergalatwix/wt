@@ -31,8 +31,8 @@ run `./install.sh` to try local changes through the real shell integration.
 
 Run both before finishing any change; CI (`.github/workflows/ci.yml`) runs
 lint on Ubuntu and tests on macOS. Tests build throwaway repos under
-`$TMPDIR`, point `XDG_CACHE_HOME` and `XDG_STATE_HOME` at a scratch dir, and set
-`GIT_CONFIG_GLOBAL=/dev/null`, so they never touch real repos, caches, or user
+`$TMPDIR`, point `XDG_STATE_HOME` at a scratch dir, and set
+`GIT_CONFIG_GLOBAL=/dev/null`, so they never touch real repos, state, or user
 config — and they run inside sandboxes that only allow writes to `$TMPDIR`.
 
 Temp files: always pass `mktemp` an explicit `"${TMPDIR:-/tmp}/name.XXXXXX"`
@@ -48,16 +48,23 @@ template. Bare `mktemp` / `mktemp -t` on macOS ignore `TMPDIR`.
   `free` renames into the smallest available `free-N`.
 - **Async allocation.** `alloc` moves the slot into place synchronously, then
   `finish_allocation` (fetch, checkout/rebase, deps install, compaction) runs in
-  a background subshell. State and logs live under
-  `${XDG_CACHE_HOME:-~/.cache}/wt/setup/`; `list` shows `setup`/`failed`, and
-  `free`/`realloc`/`remove` must refuse while setup is running.
+  a background subshell. State (`<state> <pid>`) and logs live under
+  `${XDG_STATE_HOME:-~/.local/state}/wt/setup/`, named by the escaped worktree
+  path; `list` shows `setup`/`failed`, and `free`/`realloc`/`remove` must refuse
+  while setup is running. A `running` state whose pid is dead reads as `failed`,
+  so an interrupted setup never blocks a slot; `forget_setup_files` cleans up on
+  free/realloc/remove.
 - **Dirty work is never silently lost.** Commands that reuse a worktree go
   through `ensure_clean_for_reuse`: prompt on a TTY, die when non-interactive,
   discard only with `--force`/`-f`.
-- **`list` and the picker stay cheap.** They must not scan worktree contents
-  (`git status`, `diff-index`, `ls-files --others`); `tests/80_list_performance.sh`
-  enforces this with a fake `git`. Rows are cached (`WT_CACHE_TTL`, default
-  300s) — call `clear_worktree_rows_cache` after any mutation.
+- **`list` and the picker stay cheap and live.** There is no cache: rows are
+  read from git on every call with a fixed number of processes per repo
+  (`git worktree list`, one batched `stat`, one `date`), never per worktree,
+  and never scanning worktree contents (`git status`, `diff-index`,
+  `ls-files --others`). `tests/80_list_performance.sh` counts git/stat calls to
+  enforce this. On these paths prefer bash builtins and `REPLY`-returning
+  helpers over `$(...)`, `basename`, or pipelines — each fork costs ~10-15ms on
+  macOS.
 - **Repo registry.** `main` calls `register_repo` for every repo-scoped
   command, appending to `${XDG_STATE_HOME:-~/.local/state}/wt/repos`; it must
   stay best-effort (never fail the command). `listall` runs outside any repo

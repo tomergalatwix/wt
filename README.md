@@ -283,8 +283,13 @@ column shows `-`, or `setup`/`failed` for background setup. Commands
 that can discard or reuse worktrees (`free`, `alloc`, and `realloc`) still run
 full clean checks before mutating anything.
 
-Display rows are cached for 5 minutes by default. Set `WT_CACHE_TTL=<seconds>`
-to tune that, or `WT_CACHE_TTL=0` to force a fresh metadata listing.
+Nothing is cached: every list reads live Git state with a fixed handful of
+processes per repo, so changes made outside `wt` show up immediately.
+
+Background setup state and logs live in `${XDG_STATE_HOME:-~/.local/state}/wt/setup/`.
+If a setup is interrupted (terminal closed, reboot), its worktree shows as
+`failed` instead of blocking `free`/`realloc`/`remove`. Freeing or removing a
+worktree deletes its setup files.
 
 ## Notes
 

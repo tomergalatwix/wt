@@ -47,10 +47,26 @@ create_repo_fixture_with_yarn "$root"
   PATH="$fake_bin:$PATH" "$WT_BIN" alloc feature/output > "$root/alloc.log" 2>&1
 )
 test -d "$root/repo-worktrees/feature/output"
-(cd "$REPO" && WT_CACHE_TTL=0 "$WT_BIN" list) > "$root/running-list.log"
+(cd "$REPO" && "$WT_BIN" list) > "$root/running-list.log"
 assert_match '^output[[:space:]]+setup' "$root/running-list.log"
+cat "$XDG_STATE_HOME"/wt/setup/*.state > "$root/running-state.log"
+assert_match '^running [0-9]+$' "$root/running-state.log"
 wait_for_setup "$REPO" "$root/repo-worktrees/feature/output" feature/output
 setup_log="$(setup_log_from_alloc_output "$root/alloc.log")"
+setup_state_dir="$(dirname "$setup_log")"
+[[ -z "$(ls "$setup_state_dir"/*.state 2>/dev/null)" ]] || fail 'setup state should be cleared after success'
+
+# A "running" setup whose process is gone reads as failed and doesn't block.
+output_path="$(git -C "$REPO" worktree list --porcelain | awk '/^worktree .*\/feature\/output$/ { print substr($0, 10) }')"
+state_stem="${output_path//%/%25}"
+state_file="$setup_state_dir/${state_stem//\//%2F}.state"
+printf 'running %s\n' "$$" > "$state_file"
+(cd "$REPO" && "$WT_BIN" list) > "$root/live-pid-list.log"
+assert_match '^output[[:space:]]+setup' "$root/live-pid-list.log"
+printf 'running 2147483647\n' > "$state_file"
+(cd "$REPO" && "$WT_BIN" list) > "$root/dead-pid-list.log"
+assert_match '^output[[:space:]]+failed' "$root/dead-pid-list.log"
+rm -f "$state_file"
 
 assert_contains 'Allocating feature/output' "$root/alloc.log"
 assert_contains 'Using free slot: free-1' "$root/alloc.log"
@@ -109,9 +125,18 @@ create_repo_fixture "$invalid_base_root"
 )
 invalid_base_log="$(setup_log_from_alloc_output "$invalid_base_root/invalid-base-alloc.log")"
 for _ in {1..100}; do
-  (cd "$REPO" && WT_CACHE_TTL=0 "$WT_BIN" list) > "$invalid_base_root/invalid-base-list.log"
+  (cd "$REPO" && "$WT_BIN" list) > "$invalid_base_root/invalid-base-list.log"
   grep -Eq '^invalid-base[[:space:]]+failed' "$invalid_base_root/invalid-base-list.log" && break
   sleep 0.1
 done
 assert_match '^invalid-base[[:space:]]+failed' "$invalid_base_root/invalid-base-list.log"
 assert_contains "Base ref 'missing-base' does not exist." "$invalid_base_log"
+
+# Freeing a worktree drops its setup state and log, plus leftovers from
+# worktrees that no longer exist.
+orphan_log="$(dirname "$invalid_base_log")/%2Fno%2Fsuch%2Fworktree.log"
+: > "$orphan_log"
+(cd "$REPO" && "$WT_BIN" free invalid-base --force > "$invalid_base_root/free.log")
+test ! -e "$invalid_base_log" || fail 'setup log should be removed when the worktree is freed'
+test ! -e "${invalid_base_log%.log}.state" || fail 'setup state should be removed when the worktree is freed'
+test ! -e "$orphan_log" || fail 'orphaned setup files should be pruned'

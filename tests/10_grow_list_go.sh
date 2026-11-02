@@ -22,9 +22,16 @@ assert_contains '3 worktrees total' "$root/list.log"
 
 printf 'tracked\n' >> "$root/repo-worktrees/free-1/README.md"
 printf 'untracked\n' > "$root/repo-worktrees/free-2/generated.tmp"
-(cd "$REPO" && WT_CACHE_TTL=0 "$WT_BIN" list > "$root/list-status.log")
+(cd "$REPO" && "$WT_BIN" list > "$root/list-status.log")
 assert_eq '-' "$(awk '$1 == "free-1" { print $2 }' "$root/list-status.log")"
 assert_eq '-' "$(awk '$1 == "free-2" { print $2 }' "$root/list-status.log")"
+
+# Changes made outside wt show up on the very next list.
+git -C "$root/repo-worktrees/free-2" checkout -q -b outside-wt
+(cd "$REPO" && "$WT_BIN" list > "$root/list-external.log")
+assert_eq 'outside-wt' "$(awk '$1 == "free-2" { print $NF }' "$root/list-external.log")"
+git -C "$root/repo-worktrees/free-2" checkout -q --detach
+git -C "$REPO" branch -q -D outside-wt
 
 free_path="$(cd "$REPO" && "$WT_BIN" go free-1 --print-path)"
 assert_eq "$(cd "$root/repo-worktrees/free-1" && pwd -P)" "$(cd "$free_path" && pwd -P)"

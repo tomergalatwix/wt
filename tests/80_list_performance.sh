@@ -2,59 +2,45 @@
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
-now_ms() {
-  perl -MTime::HiRes=time -e 'printf "%d\n", time() * 1000'
-}
+# `wt list` reads live state with a fixed number of processes per repo: the
+# git and stat call counts must not grow with the number of worktrees, and it
+# must never scan worktree contents.
 
 root="$(new_test_root)"
 create_repo_fixture "$root"
-(cd "$REPO" && "$WT_BIN" grow --size 5 > /dev/null)
 
-real_git="$(command -v git)"
 fake_bin="$root/bin"
 mkdir -p "$fake_bin"
-cat > "$fake_bin/git" <<'FAKE_GIT'
+for tool in git stat; do
+  cat > "$fake_bin/$tool" <<FAKE
 #!/usr/bin/env bash
-set -euo pipefail
-
-if [[ "$*" == *" status --porcelain"* || "$*" == *" ls-files --others"* ]]; then
-  if [[ "${WT_TEST_STATUS_FAIL:-0}" == 1 ]]; then
-    printf '%s\n' "$*" >> "${WT_TEST_SCAN_LOG:?}"
-    echo "status/untracked scans should not be called" >&2
+printf '%s\n' "\$*" >> "$root/$tool.calls"
+case "\$*" in
+  *" status --porcelain"*|*" ls-files --others"*|*" diff-index "*)
+    echo "wt list must not scan worktree contents: \$*" >&2
     exit 42
-  fi
-  sleep "${WT_TEST_STATUS_DELAY:-0}"
-fi
+    ;;
+esac
+exec "$(command -v "$tool")" "\$@"
+FAKE
+  chmod +x "$fake_bin/$tool"
+done
 
-if [[ "$*" == *" diff-index --quiet HEAD --"* ]]; then
-  if [[ "${WT_TEST_DIFF_FAIL:-0}" == 1 ]]; then
-    printf '%s\n' "$*" >> "${WT_TEST_SCAN_LOG:?}"
-    echo "diff-index should not be called" >&2
-    exit 42
-  fi
-  sleep "${WT_TEST_DIFF_DELAY:-0}"
-fi
+list_with_counts() {
+  rm -f "$root/git.calls" "$root/stat.calls"
+  (cd "$REPO" && PATH="$fake_bin:$PATH" "$WT_BIN" list > "$root/list.log")
+  printf '%s %s\n' "$(wc -l < "$root/git.calls" | tr -d ' ')" "$(wc -l < "$root/stat.calls" | tr -d ' ')"
+}
 
-exec "${WT_TEST_REAL_GIT:?}" "$@"
-FAKE_GIT
-chmod +x "$fake_bin/git"
+(cd "$REPO" && "$WT_BIN" grow --size 2 > /dev/null)
+small="$(list_with_counts)"
+assert_contains '3 worktrees total' "$root/list.log"
 
-start="$(now_ms)"
-(cd "$REPO" && XDG_CACHE_HOME="$root/cache" PATH="$fake_bin:$PATH" WT_TEST_REAL_GIT="$real_git" WT_TEST_SCAN_LOG="$root/scans.log" WT_TEST_STATUS_FAIL=1 WT_TEST_DIFF_FAIL=1 WT_CACHE_TTL=0 "$WT_BIN" list > "$root/list.log")
-elapsed=$(( $(now_ms) - start ))
+(cd "$REPO" && "$WT_BIN" grow --size 8 > /dev/null)
+large="$(list_with_counts)"
+assert_contains '11 worktrees total' "$root/list.log"
 
-assert_contains '6 worktrees total' "$root/list.log"
-[[ ! -s "$root/scans.log" ]] || fail 'wt list scanned worktree changes'
-if ((elapsed > 1500)); then
-  fail "wt list took ${elapsed}ms without change scans; expected <= 1500ms"
-fi
-
-(cd "$REPO" && XDG_CACHE_HOME="$root/cache" PATH="$fake_bin:$PATH" WT_TEST_REAL_GIT="$real_git" WT_TEST_SCAN_LOG="$root/scans.log" WT_TEST_STATUS_FAIL=1 WT_TEST_DIFF_FAIL=1 WT_CACHE_TTL=60 "$WT_BIN" list > /dev/null)
-start="$(now_ms)"
-(cd "$REPO" && XDG_CACHE_HOME="$root/cache" PATH="$fake_bin:$PATH" WT_TEST_REAL_GIT="$real_git" WT_TEST_SCAN_LOG="$root/scans.log" WT_TEST_STATUS_FAIL=1 WT_TEST_DIFF_FAIL=1 WT_CACHE_TTL=60 "$WT_BIN" list > "$root/list-cached.log")
-cached_elapsed=$(( $(now_ms) - start ))
-
-assert_contains '6 worktrees total' "$root/list-cached.log"
-if ((cached_elapsed > 500)); then
-  fail "cached wt list took ${cached_elapsed}ms; expected <= 500ms"
-fi
+assert_eq "$small" "$large"
+assert_eq 1 "${large#* }"
+git_calls="${large% *}"
+((git_calls <= 2)) || fail "wt list ran git $git_calls times; expected <= 2"

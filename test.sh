@@ -29,7 +29,6 @@ fi
 # the cwd when the system temp dirs are unwritable (e.g. in a sandbox).
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/wt-run.XXXXXX")"
 trap 'rm -rf "$work_dir"' EXIT
-export XDG_CACHE_HOME="$work_dir/cache"
 export XDG_STATE_HOME="$work_dir/state"
 
 pass=0
