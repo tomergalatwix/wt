@@ -26,3 +26,9 @@ PATH="$(dirname "$WT_BIN"):$PATH" zsh -lc "source '$WT_SHELL'; cd '$root/repo-wo
 free_pwd="$(tail -n1 "$root/free-pwd.log")"
 assert_eq "$(cd "$root/repo-worktrees/free-1/subdir" && pwd -P)" "$free_pwd"
 assert_not_contains '__WT_FREED__' "$root/free.log"
+
+# An open shell picks up a changed wrapper file on its next wt call.
+cp "$WT_SHELL" "$root/wt.zsh"
+PATH="$(dirname "$WT_BIN"):$PATH" zsh -lc "source '$root/wt.zsh'; cd '$REPO'; wt list > /dev/null; printf '\\n__wt_reloaded() { print reloaded; }\\n' >> '$root/wt.zsh'; touch -t 203001010000 '$root/wt.zsh'; wt list > /dev/null; __wt_reloaded" > "$root/reload.log" 2>&1
+assert_eq 'reloaded' "$(tail -n1 "$root/reload.log")"
+

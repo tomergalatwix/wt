@@ -58,7 +58,33 @@ __wt_run_and_cd_freed() {
   return 0
 }
 
+zmodload -F zsh/stat b:zstat 2>/dev/null
+typeset -g __WT_ZSH_FILE="${${(%):-%x}:A}"
+
+__wt_zsh_mtime() {
+  local -a _wt_mtime
+  zstat -A _wt_mtime +mtime -- "$__WT_ZSH_FILE" 2>/dev/null || return 1
+  REPLY="${_wt_mtime[1]}"
+}
+
+typeset -g __WT_ZSH_MTIME=""
+__wt_zsh_mtime && __WT_ZSH_MTIME="$REPLY"
+
+# Re-sources this file when it changed on disk (install/update from any
+# shell), so open shells pick up the new wrapper without a manual source.
+__wt_reload_if_changed() {
+  local REPLY
+  __wt_zsh_mtime || return 1
+  [[ "$REPLY" != "$__WT_ZSH_MTIME" ]] || return 1
+  source "$__WT_ZSH_FILE"
+}
+
 __wt_main() {
+  if __wt_reload_if_changed; then
+    __wt_main "$@"
+    return $?
+  fi
+
   local -a _wt_global_args
   while [[ "${1:-}" == "--verbose" || "${1:-}" == "-v" ]]; do
     _wt_global_args+=("$1")

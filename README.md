@@ -74,9 +74,9 @@ Update an existing install:
 wt update
 ```
 
-When `wt update` is run through the shell integration, it reloads the updated
-wrapper in the current shell. If you run the binary directly, reload manually
-with `source ~/.zshrc`.
+Open shells pick up the new wrapper on their next `wt` call: it re-sources
+`~/.config/wt/wt.zsh` when the file changed, so there is no need to
+`source ~/.zshrc` after `wt update` or `./install.sh`.
 
 Or without relying on the installed command:
 
