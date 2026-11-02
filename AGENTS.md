@@ -31,7 +31,7 @@ run `./install.sh` to try local changes through the real shell integration.
 
 Run both before finishing any change; CI (`.github/workflows/ci.yml`) runs
 lint on Ubuntu and tests on macOS. Tests build throwaway repos under
-`$TMPDIR`, point `XDG_CACHE_HOME` at a scratch dir, and set
+`$TMPDIR`, point `XDG_CACHE_HOME` and `XDG_STATE_HOME` at a scratch dir, and set
 `GIT_CONFIG_GLOBAL=/dev/null`, so they never touch real repos, caches, or user
 config — and they run inside sandboxes that only allow writes to `$TMPDIR`.
 
@@ -58,6 +58,10 @@ template. Bare `mktemp` / `mktemp -t` on macOS ignore `TMPDIR`.
   (`git status`, `diff-index`, `ls-files --others`); `tests/80_list_performance.sh`
   enforces this with a fake `git`. Rows are cached (`WT_CACHE_TTL`, default
   300s) — call `clear_worktree_rows_cache` after any mutation.
+- **Repo registry.** `main` calls `register_repo` for every repo-scoped
+  command, appending to `${XDG_STATE_HOME:-~/.local/state}/wt/repos`; it must
+  stay best-effort (never fail the command). `listall` runs outside any repo
+  and prunes entries that are no longer git repos.
 - **Git ops inside worktrees go through `git_wt`**, which reuses the main
   checkout's Lefthook or disables hooks, so missing hook deps never block
   pool management.

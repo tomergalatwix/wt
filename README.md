@@ -7,6 +7,7 @@ It gives you:
 
 - `wt` - an interactive `fzf` picker for worktrees and actions
 - `wt list` - a compact worktree table with reusable free slots grouped at the bottom
+- `wt listall` - the same table for every repo `wt` has been used in, from any directory
 - `wt go <query>` - `cd` into a worktree by name, branch, or path match
 - `wt grow` - add reusable `free-N` worktrees to the pool
 - `wt alloc <branch>` - allocate or checkout a branch in a free worktree
@@ -142,6 +143,17 @@ List worktrees:
 ```bash
 wt list
 ```
+
+List worktrees of every known repo, from any directory:
+
+```bash
+wt listall
+```
+
+Any `wt` command run inside a repo records it in
+`${XDG_STATE_HOME:-~/.local/state}/wt/repos`. `listall` shows each repo as a
+blue title followed by its worktree table, and drops repos that no longer
+exist.
 
 Jump to a worktree:
 

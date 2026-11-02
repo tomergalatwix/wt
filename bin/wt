@@ -30,6 +30,14 @@ info() {
   fi
 }
 
+title() {
+  if color_enabled; then
+    printf '\033[1;34m%s\033[0m\n' "$*"
+  else
+    printf '%s\n' "$*"
+  fi
+}
+
 verbose_enabled() {
   [[ "${WT_VERBOSE:-0}" == "1" ]]
 }
@@ -916,49 +924,118 @@ cmd_list() {
     shift
   done
 
-  local rows=()
-  local row
-  while IFS= read -r row; do
-    [[ -n "$row" ]] || continue
-    rows+=("$row")
-  done < <(worktree_rows "$repo")
+  local rows
+  rows="$(worktree_rows "$repo")"
 
+  info "Git Worktrees for $(basename "$repo")"
+  # shellcheck disable=SC2046 # widths are two integers
+  printf '%s\n' "$rows" | print_worktree_table $(printf '%s\n' "$rows" | worktree_table_widths)
+  info "$(count_rows "$rows") worktrees total"
+}
+
+count_rows() {
+  printf '%s\n' "$1" | grep -c . || true
+}
+
+# Reads worktree rows on stdin; prints "<name width> <branch width>".
+worktree_table_widths() {
   local name_w=4
   local branch_w=6
-  local line name branch
-  for row in "${rows[@]}"; do
-    line="${row#*|}"   # drop epoch
-    name="${line%%|*}"
+  local mtime name status mtime_h branch path
+  while IFS='|' read -r mtime name status mtime_h branch path; do
+    [[ -n "$mtime" ]] || continue
     if ((${#name} > name_w)); then
       name_w=${#name}
     fi
-    line="${line#*|}"  # drop name
-    line="${line#*|}"  # drop status
-    line="${line#*|}"  # drop modified
-    branch="${line%%|*}"
     if ((${#branch} > branch_w)); then
       branch_w=${#branch}
     fi
   done
+  printf '%s %s\n' "$name_w" "$branch_w"
+}
 
-  info "Git Worktrees for $(basename "$repo")"
+# Reads worktree rows on stdin; prints the header and sorted rows.
+print_worktree_table() {
+  local name_w="$1"
+  local branch_w="$2"
+  local mtime name status mtime_h branch path
+
   printf "%-${name_w}s  %-7s  %-16s  %-${branch_w}s\n" "NAME" "STATUS" "LAST MODIFIED" "BRANCH"
-
-  local line
-  while IFS= read -r line; do
-    local name status mtime_h branch
-    line="${line#*|}"            # drop epoch
-    name="${line%%|*}"
-    line="${line#*|}"
-    status="${line%%|*}"
-    line="${line#*|}"
-    mtime_h="${line%%|*}"
-    line="${line#*|}"
-    branch="${line%%|*}"
+  sort_worktree_rows | while IFS='|' read -r mtime name status mtime_h branch path; do
     printf "%-${name_w}s  %-7s  %-16s  %-${branch_w}s\n" "$name" "$status" "$mtime_h" "$branch"
-  done < <(printf '%s\n' "${rows[@]}" | sort_worktree_rows)
+  done
+}
 
-  info "$((${#rows[@]})) worktrees total"
+repos_registry_file() {
+  printf '%s/wt/repos\n' "${XDG_STATE_HOME:-$HOME/.local/state}"
+}
+
+# Best-effort: a read-only state dir must never block the command itself.
+register_repo() {
+  local repo="$1"
+  local file
+  file="$(repos_registry_file)"
+  [[ -f "$file" ]] && grep -Fxq -- "$repo" "$file" && return 0
+  mkdir -p "$(dirname "$file")" 2>/dev/null || return 0
+  { printf '%s\n' "$repo" >> "$file"; } 2>/dev/null || true
+}
+
+cmd_listall() {
+  [[ $# -eq 0 ]] || die "Unknown option for listall: $1"
+
+  local file
+  file="$(repos_registry_file)"
+  local repos=()
+  local stale=0
+  local repo
+  if [[ -f "$file" ]]; then
+    while IFS= read -r repo; do
+      [[ -n "$repo" ]] || continue
+      if git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+        repos+=("$repo")
+      else
+        stale=1
+      fi
+    done < <(LC_ALL=C sort -u "$file")
+  fi
+
+  if ((stale)); then
+    local tmp
+    if tmp="$(mktemp "$(dirname "$file")/repos.XXXXXX" 2>/dev/null)"; then
+      if ((${#repos[@]})); then
+        printf '%s\n' "${repos[@]}" > "$tmp"
+      fi
+      mv "$tmp" "$file"
+    fi
+  fi
+
+  if ((${#repos[@]} == 0)); then
+    info "No repos registered yet. Run any wt command inside a repo to add it."
+    return 0
+  fi
+
+  local all_rows=()
+  local i
+  for ((i = 0; i < ${#repos[@]}; i++)); do
+    all_rows+=("$(worktree_rows "${repos[$i]}")")
+  done
+
+  local widths
+  widths="$(printf '%s\n' "${all_rows[@]}" | worktree_table_widths)"
+
+  local total=0
+  for ((i = 0; i < ${#repos[@]}; i++)); do
+    ((i == 0)) || printf '\n'
+    title "$(basename "${repos[$i]}")  ${repos[$i]/#"$HOME"/\~}"
+    # shellcheck disable=SC2086 # widths are two integers
+    printf '%s\n' "${all_rows[$i]}" | print_worktree_table $widths
+    total=$((total + $(count_rows "${all_rows[$i]}")))
+  done
+
+  local noun=repos
+  ((${#repos[@]} == 1)) && noun=repo
+  printf '\n'
+  info "$total worktrees across ${#repos[@]} $noun"
 }
 
 cmd_interactive() {
@@ -1677,6 +1754,7 @@ Usage:
   wt realloc <query> [branch] [--base REF] [--force|-f] [--yes] [--verbose]
   wt go <query> [--print-path]
   wt list
+  wt listall
   wt free <query> [--force|-f] [--verbose]
   wt remove <query> [--force|-f] [--yes]
   wt update
@@ -1686,6 +1764,7 @@ Behavior:
   - alloc: creates the worktree immediately; checkout/rebase/dependencies continue in background.
   - realloc: frees a selected worktree, then allocates a branch into that same slot.
   - list: shows in-use worktrees by recency, then free slots lexicographically; setup/failed marks async allocation state.
+  - listall: runs from anywhere; lists worktrees of every repo wt has been used in.
   - free: detaches HEAD and renames worktree to smallest available free-N.
   - remove: deletes a pool worktree after confirmation; main is protected.
   - update: downloads the latest installer from GitHub and reinstalls wt.
@@ -1707,10 +1786,12 @@ main() {
   case "$cmd" in
     help|-h|--help) cmd_help; return 0 ;;
     update) cmd_update "$@"; return 0 ;;
+    listall) cmd_listall "$@"; return 0 ;;
   esac
 
   local repo
   repo="$(repo_root)"
+  register_repo "$repo"
 
   case "$cmd" in
     interactive) cmd_interactive "$repo" "$@" ;;
