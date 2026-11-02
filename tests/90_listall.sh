@@ -30,6 +30,14 @@ assert_eq 2 "$(grep -c '^NAME' "$root/listall.log")"
 assert_contains '3 worktrees across 2 repos' "$root/listall.log"
 # Columns line up across repos even though their widest names differ.
 assert_eq 1 "$(grep '^NAME' "$root/listall.log" | sort -u | wc -l | tr -d ' ')"
+assert_not_contains 'STATUS' "$root/listall.log"
+printf 'dirty\n' > "$repo_a/dirty.tmp"
+(cd "$outside" && "$WT_BIN" listall -v > "$root/listall-verbose.log")
+assert_eq 2 "$(grep -c '^NAME[[:space:]]*STATUS' "$root/listall-verbose.log")"
+assert_match '^free-1[[:space:]]+clean' "$root/listall-verbose.log"
+assert_eq 2 "$(grep -cE '^main[[:space:]]+' "$root/listall-verbose.log")"
+assert_eq 1 "$(grep -cE '^main[[:space:]]+1 changed' "$root/listall-verbose.log")"
+rm -f "$repo_a/dirty.tmp"
 
 root_p="$(cd "$root" && pwd -P)"
 (cd "$outside" && HOME="$root_p" "$WT_BIN" listall > "$root/listall-home.log")

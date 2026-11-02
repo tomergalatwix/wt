@@ -668,6 +668,69 @@ worktree_rows() {
   done
 }
 
+# Replaces the "-" status of every row in STATUS_BLOCKS (each element is a
+# newline-separated block of worktree rows) with "clean" or "N changed". Runs
+# one git status per worktree, all in parallel; setup/failed are kept.
+STATUS_BLOCKS=()
+add_worktree_status() {
+  local tmp
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/wt-status.XXXXXX")"
+  local b n=0 row rest status path
+  for b in "${!STATUS_BLOCKS[@]}"; do
+    while IFS= read -r row; do
+      [[ -n "$row" ]] || continue
+      rest="${row#*|}"
+      rest="${rest#*|}"
+      status="${rest%%|*}"
+      path="${row##*|}"
+      if [[ "$status" == "-" ]]; then
+        (git -C "$path" -c core.untrackedCache=true status --porcelain >"$tmp/$n" 2>/dev/null || rm -f "$tmp/$n") &
+      fi
+      n=$((n + 1))
+    done <<<"${STATUS_BLOCKS[$b]}"
+  done
+  wait
+
+  n=0
+  local block count _line
+  for b in "${!STATUS_BLOCKS[@]}"; do
+    block=""
+    while IFS= read -r row; do
+      [[ -n "$row" ]] || continue
+      rest="${row#*|}"
+      rest="${rest#*|}"
+      status="${rest%%|*}"
+      if [[ "$status" == "-" ]]; then
+        if [[ -f "$tmp/$n" ]]; then
+          count=0
+          while IFS= read -r _line; do
+            count=$((count + 1))
+          done <"$tmp/$n"
+          status="clean"
+          ((count == 0)) || status="$count changed"
+        else
+          status="?"
+        fi
+        row="${row%"$rest"}$status|${rest#*|}"
+      fi
+      block+="$row"$'\n'
+      n=$((n + 1))
+    done <<<"${STATUS_BLOCKS[$b]}"
+    STATUS_BLOCKS[b]="${block%$'\n'}"
+  done
+  rm -rf "$tmp"
+}
+
+# Sets REPLY to one table line; the STATUS column only shows with --verbose.
+table_cells() {
+  local name_w="$1" status_w="$2" branch_w="$3"
+  if verbose_enabled; then
+    printf -v REPLY "%-${name_w}s  %-${status_w}s  %-16s  %-${branch_w}s" "$4" "$5" "$6" "$7"
+  else
+    printf -v REPLY "%-${name_w}s  %-16s  %-${branch_w}s" "$4" "$6" "$7"
+  fi
+}
+
 is_free_slot_path() {
   local path="$1"
   [[ "${path##*/}" =~ ^${WT_FREE_PREFIX}[0-9]+$ ]]
@@ -900,6 +963,7 @@ cmd_list() {
   while (($#)); do
     case "$1" in
       --full) ;; # kept for backward compatibility; list is always full now
+      --verbose|-v) WT_VERBOSE=1 ;;
       *) die "Unknown option for list: $1" ;;
     esac
     shift
@@ -907,9 +971,14 @@ cmd_list() {
 
   local rows
   rows="$(worktree_rows "$repo")"
+  if verbose_enabled; then
+    STATUS_BLOCKS=("$rows")
+    add_worktree_status
+    rows="${STATUS_BLOCKS[0]}"
+  fi
 
   info "Git Worktrees for $(basename "$repo")"
-  # shellcheck disable=SC2046 # widths are two integers
+  # shellcheck disable=SC2046 # widths are three integers
   printf '%s\n' "$rows" | print_worktree_table $(printf '%s\n' "$rows" | worktree_table_widths)
   info "$(count_rows "$rows") worktrees total"
 }
@@ -918,9 +987,10 @@ count_rows() {
   printf '%s\n' "$1" | grep -c . || true
 }
 
-# Reads worktree rows on stdin; prints "<name width> <branch width>".
+# Reads worktree rows on stdin; prints "<name width> <status width> <branch width>".
 worktree_table_widths() {
   local name_w=4
+  local status_w=6
   local branch_w=6
   local mtime name status mtime_h branch path
   while IFS='|' read -r mtime name status mtime_h branch path; do
@@ -928,22 +998,26 @@ worktree_table_widths() {
     if ((${#name} > name_w)); then
       name_w=${#name}
     fi
+    if ((${#status} > status_w)); then
+      status_w=${#status}
+    fi
     if ((${#branch} > branch_w)); then
       branch_w=${#branch}
     fi
   done
-  printf '%s %s\n' "$name_w" "$branch_w"
+  printf '%s %s %s\n' "$name_w" "$status_w" "$branch_w"
 }
 
 # Reads worktree rows on stdin; prints the header and sorted rows.
 print_worktree_table() {
-  local name_w="$1"
-  local branch_w="$2"
+  local widths=("$@")
   local mtime name status mtime_h branch path
 
-  printf "%-${name_w}s  %-7s  %-16s  %-${branch_w}s\n" "NAME" "STATUS" "LAST MODIFIED" "BRANCH"
+  table_cells "${widths[@]}" "NAME" "STATUS" "LAST MODIFIED" "BRANCH"
+  printf '%s\n' "$REPLY"
   sort_worktree_rows | while IFS='|' read -r mtime name status mtime_h branch path; do
-    printf "%-${name_w}s  %-7s  %-16s  %-${branch_w}s\n" "$name" "$status" "$mtime_h" "$branch"
+    table_cells "${widths[@]}" "$name" "$status" "$mtime_h" "$branch"
+    printf '%s\n' "$REPLY"
   done
 }
 
@@ -1072,6 +1146,7 @@ cmd_listall() {
   while (($#)); do
     case "$1" in
       -i|--interactive) interactive=1 ;;
+      --verbose|-v) WT_VERBOSE=1 ;;
       *) die "Unknown option for listall: $1" ;;
     esac
     shift
@@ -1081,6 +1156,11 @@ cmd_listall() {
   if ((${#LISTALL_REPOS[@]} == 0)); then
     info "No repos registered yet. Run any wt command inside a repo to add it."
     return 0
+  fi
+  if verbose_enabled; then
+    STATUS_BLOCKS=("${LISTALL_ROWS[@]}")
+    add_worktree_status
+    LISTALL_ROWS=("${STATUS_BLOCKS[@]}")
   fi
 
   if ((interactive)); then
@@ -1101,7 +1181,7 @@ cmd_listall() {
     ((first)) || printf '\n'
     first=0
     title "${LISTALL_REPOS[$i]##*/}  ${LISTALL_REPOS[$i]/#"$HOME"/$tilde}"
-    # shellcheck disable=SC2086 # widths are two integers
+    # shellcheck disable=SC2086 # widths are three integers
     printf '%s\n' "${LISTALL_ROWS[$i]}" | print_worktree_table $widths
     total=$((total + count))
   done
@@ -1216,7 +1296,13 @@ pick_action() {
 cmd_interactive() {
   local repo="$1"
   shift
-  [[ $# -eq 0 ]] || die "Unknown option for interactive mode: $1"
+  while (($#)); do
+    case "$1" in
+      --verbose|-v) WT_VERBOSE=1 ;;
+      *) die "Unknown option for interactive mode: $1" ;;
+    esac
+    shift
+  done
 
   local fzf_cmd
   fzf_cmd="$(fzf_command)"
@@ -1227,36 +1313,34 @@ cmd_interactive() {
     [[ -n "$row" ]] || continue
     rows+=("$row")
   done < <(worktree_rows "$repo")
+  if verbose_enabled && ((${#rows[@]})); then
+    STATUS_BLOCKS=("$(printf '%s\n' "${rows[@]}")")
+    add_worktree_status
+    rows=()
+    while IFS= read -r row; do
+      rows+=("$row")
+    done <<<"${STATUS_BLOCKS[0]}"
+  fi
 
-  local name_w=16
-  local branch_w=18
-  local row line name branch
-  for row in "${rows[@]}"; do
-    line="${row#*|}"
-    name="${line%%|*}"
-    if ((${#name} > name_w)); then
-      name_w=${#name}
-    fi
-    line="${line#*|}"
-    line="${line#*|}"
-    line="${line#*|}"
-    branch="${line%%|*}"
-    if ((${#branch} > branch_w)); then
-      branch_w=${#branch}
-    fi
-  done
+  local name_w status_w branch_w
+  read -r name_w status_w branch_w < <(printf '%s\n' "${rows[@]}" | worktree_table_widths)
+  ((name_w >= 16)) || name_w=16
+  ((branch_w >= 18)) || branch_w=18
 
   while :; do
     local selection_raw selection
     selection_raw="$(
       {
-        printf "%-${name_w}s  %-7s  %-16s  %-${branch_w}s\t%s\t%s\n" "NAME" "STATUS" "LAST MODIFIED" "BRANCH" "__NAME__" "__PATH__"
+        table_cells "$name_w" "$status_w" "$branch_w" "NAME" "STATUS" "LAST MODIFIED" "BRANCH"
+        printf '%s\t%s\t%s\n' "$REPLY" "__NAME__" "__PATH__"
         printf '%s\n' "${rows[@]}" |
           sort_worktree_rows |
           while IFS='|' read -r _mtime _name _status _mtime_h _branch _path; do
-            printf "%-${name_w}s  %-7s  %-16s  %-${branch_w}s\t%s\t%s\n" "$_name" "$_status" "$_mtime_h" "$_branch" "$_name" "$_path"
+            table_cells "$name_w" "$status_w" "$branch_w" "$_name" "$_status" "$_mtime_h" "$_branch"
+            printf '%s\t%s\t%s\n' "$REPLY" "$_name" "$_path"
           done
-        printf "%-${name_w}s  %-7s  %-16s  %-${branch_w}s\t%s\t%s\n" "Add new worktree" "" "" "" "__WT_GROW__" "__WT_GROW__"
+        table_cells "$name_w" "$status_w" "$branch_w" "Add new worktree" "" "" ""
+        printf '%s\t%s\t%s\n' "$REPLY" "__WT_GROW__" "__WT_GROW__"
       } |
         "$fzf_cmd" \
           --height=80% \
@@ -1296,8 +1380,14 @@ cmd_interactive_all() {
   local fzf_cmd
   fzf_cmd="$(fzf_command)"
 
-  local name_w branch_w
-  read -r name_w branch_w < <(printf '%s\n' "${LISTALL_ROWS[@]}" | worktree_table_widths)
+  if verbose_enabled; then
+    STATUS_BLOCKS=("${LISTALL_ROWS[@]}")
+    add_worktree_status
+    LISTALL_ROWS=("${STATUS_BLOCKS[@]}")
+  fi
+
+  local name_w status_w branch_w
+  read -r name_w status_w branch_w < <(printf '%s\n' "${LISTALL_ROWS[@]}" | worktree_table_widths)
   local title_start="" title_end=""
   if color_enabled; then
     title_start=$'\033[1;34m'
@@ -1309,14 +1399,16 @@ cmd_interactive_all() {
     local selection_raw selection entry i
     selection_raw="$(
       {
-        printf "  %-${name_w}s  %-7s  %-16s  %-${branch_w}s\t%s\t%s\t%s\n" "NAME" "STATUS" "LAST MODIFIED" "BRANCH" "__NAME__" "__PATH__" "__REPO__"
+        table_cells "$name_w" "$status_w" "$branch_w" "NAME" "STATUS" "LAST MODIFIED" "BRANCH"
+        printf '  %s\t%s\t%s\t%s\n' "$REPLY" "__NAME__" "__PATH__" "__REPO__"
         for entry in "${LISTALL_ORDER[@]}"; do
           i="${entry#*|}"
           printf '%s%s%s  %s\t\t__WT_REPO__\t%s\n' "$title_start" "${LISTALL_REPOS[$i]##*/}" "$title_end" "${LISTALL_REPOS[$i]/#"$HOME"/$tilde}" "${LISTALL_REPOS[$i]}"
           printf '%s\n' "${LISTALL_ROWS[$i]}" |
             sort_worktree_rows |
             while IFS='|' read -r _mtime _name _status _mtime_h _branch _path; do
-              printf "  %-${name_w}s  %-7s  %-16s  %-${branch_w}s\t%s\t%s\t%s\n" "$_name" "$_status" "$_mtime_h" "$_branch" "$_name" "$_path" "${LISTALL_REPOS[$i]}"
+              table_cells "$name_w" "$status_w" "$branch_w" "$_name" "$_status" "$_mtime_h" "$_branch"
+              printf '  %s\t%s\t%s\t%s\n' "$REPLY" "$_name" "$_path" "${LISTALL_REPOS[$i]}"
             done
         done
       } |
@@ -1906,8 +1998,8 @@ Usage:
   wt alloc [branch] [--base REF] [--verbose]
   wt realloc <query> [branch] [--base REF] [--force|-f] [--yes] [--verbose]
   wt go <query> [--print-path]
-  wt list
-  wt listall [-i|--interactive]
+  wt list [--verbose|-v]
+  wt listall [-i|--interactive] [--verbose|-v]
   wt discover [DIR...]
   wt free <query> [--force|-f] [--verbose]
   wt remove <query> [--force|-f] [--yes]
@@ -1917,7 +2009,8 @@ Behavior:
   - grow: adds new detached free-N slots to the reusable pool.
   - alloc: creates the worktree immediately; checkout/rebase/dependencies continue in background.
   - realloc: frees a selected worktree, then allocates a branch into that same slot.
-  - list: shows in-use worktrees by recency, then free slots lexicographically; setup/failed marks async allocation state.
+  - list: shows in-use worktrees by recency, then free slots lexicographically.
+    --verbose adds a STATUS column (clean, N changed, setup, failed); it runs git status per worktree, so it is slower.
   - listall: lists worktrees of every repo wt has been used in, from anywhere; -i opens a picker across them.
   - wt with no arguments outside a repo opens that all-repos picker.
   - discover: registers repos with a <repo>-worktrees pool up to 3 levels below DIR (default: $HOME).
@@ -1925,7 +2018,7 @@ Behavior:
   - remove: deletes a pool worktree after confirmation; main is protected.
   - update: downloads the latest installer from GitHub and reinstalls wt.
   - go: prints a path normally; with shell integration, changes directory.
-  - --verbose: records detailed background setup output in the allocation log.
+  - --verbose on alloc/realloc/grow/free: records detailed background setup output in the allocation log.
 EOF
 }
 

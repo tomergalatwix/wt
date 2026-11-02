@@ -47,7 +47,7 @@ create_repo_fixture_with_yarn "$root"
   PATH="$fake_bin:$PATH" "$WT_BIN" alloc feature/output > "$root/alloc.log" 2>&1
 )
 test -d "$root/repo-worktrees/feature/output"
-(cd "$REPO" && "$WT_BIN" list) > "$root/running-list.log"
+(cd "$REPO" && "$WT_BIN" list -v) > "$root/running-list.log"
 assert_match '^output[[:space:]]+setup' "$root/running-list.log"
 cat "$XDG_STATE_HOME"/wt/setup/*.state > "$root/running-state.log"
 assert_match '^running [0-9]+$' "$root/running-state.log"
@@ -61,10 +61,10 @@ output_path="$(git -C "$REPO" worktree list --porcelain | awk '/^worktree .*\/fe
 state_stem="${output_path//%/%25}"
 state_file="$setup_state_dir/${state_stem//\//%2F}.state"
 printf 'running %s\n' "$$" > "$state_file"
-(cd "$REPO" && "$WT_BIN" list) > "$root/live-pid-list.log"
+(cd "$REPO" && "$WT_BIN" list -v) > "$root/live-pid-list.log"
 assert_match '^output[[:space:]]+setup' "$root/live-pid-list.log"
 printf 'running 2147483647\n' > "$state_file"
-(cd "$REPO" && "$WT_BIN" list) > "$root/dead-pid-list.log"
+(cd "$REPO" && "$WT_BIN" list -v) > "$root/dead-pid-list.log"
 assert_match '^output[[:space:]]+failed' "$root/dead-pid-list.log"
 rm -f "$state_file"
 
@@ -125,7 +125,7 @@ create_repo_fixture "$invalid_base_root"
 )
 invalid_base_log="$(setup_log_from_alloc_output "$invalid_base_root/invalid-base-alloc.log")"
 for _ in {1..100}; do
-  (cd "$REPO" && "$WT_BIN" list) > "$invalid_base_root/invalid-base-list.log"
+  (cd "$REPO" && "$WT_BIN" list -v) > "$invalid_base_root/invalid-base-list.log"
   grep -Eq '^invalid-base[[:space:]]+failed' "$invalid_base_root/invalid-base-list.log" && break
   sleep 0.1
 done

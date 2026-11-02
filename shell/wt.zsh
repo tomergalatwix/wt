@@ -59,9 +59,15 @@ __wt_run_and_cd_freed() {
 }
 
 wt() {
-  if [[ $# -eq 0 || ( "$1" == listall && ( "${2:-}" == -i || "${2:-}" == --interactive ) ) ]]; then
+  local -a _wt_global_args
+  while [[ "${1:-}" == "--verbose" || "${1:-}" == "-v" ]]; do
+    _wt_global_args+=("$1")
+    shift
+  done
+
+  if [[ $# -eq 0 || ( "$1" == listall && ( ${@[(Ie)-i]} -gt 0 || ${@[(Ie)--interactive]} -gt 0 ) ) ]]; then
     local _wt_result _wt_action _wt_payload _wt_name _wt_path _wt_answer
-    _wt_result="$(WT_SHELL_INTEGRATION=1 command wt "$@")" || return $?
+    _wt_result="$(WT_SHELL_INTEGRATION=1 command wt "${_wt_global_args[@]}" "$@")" || return $?
     [[ -n "$_wt_result" ]] || return 0
 
     _wt_action="${_wt_result%%$'\t'*}"
@@ -128,12 +134,6 @@ wt() {
         ;;
     esac
   fi
-
-  local -a _wt_global_args
-  while [[ "${1:-}" == "--verbose" || "${1:-}" == "-v" ]]; do
-    _wt_global_args+=("$1")
-    shift
-  done
 
   if [[ "${1:-}" == "alloc" ]]; then
     __wt_run_and_cd_alloc "${_wt_global_args[@]}" "$@"

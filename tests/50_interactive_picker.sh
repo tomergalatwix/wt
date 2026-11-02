@@ -122,6 +122,20 @@ assert_eq __WT_REPO__ "$(awk -F '\t' 'NR == 2 { print $3 }' "$root/all-input.log
 output="$(cd "$first_repo" && WT_SHELL_INTEGRATION=1 WT_FZF_COMMAND="$fake_fzf" WT_SELECT_NAME=other-wt WT_TEST_ACTION=go "$WT_BIN" listall -i)"
 assert_eq "$(printf '__WT_GO__\t%s\tother-wt' "$other_wt")" "$output"
 
+# STATUS only shows with --verbose, in both pickers.
+assert_not_contains 'STATUS' "$root/all-input.log"
+(cd "$first_repo" && WT_SHELL_INTEGRATION=1 WT_FZF_COMMAND="$fake_fzf" WT_TEST_INPUT_LOG="$root/repo-input.log" "$WT_BIN" > /dev/null)
+assert_not_contains 'STATUS' "$root/repo-input.log"
+printf 'dirty\n' > "$root/repo-worktrees/work-one/dirty.tmp"
+(cd "$first_repo" && WT_SHELL_INTEGRATION=1 WT_FZF_COMMAND="$fake_fzf" WT_TEST_INPUT_LOG="$root/repo-input-verbose.log" "$WT_BIN" -v > /dev/null)
+assert_match '^NAME[[:space:]]+STATUS' "$root/repo-input-verbose.log"
+assert_match '^work-one[[:space:]]+1 changed' "$root/repo-input-verbose.log"
+assert_match '^main[[:space:]]+clean' "$root/repo-input-verbose.log"
+rm -f "$root/repo-worktrees/work-one/dirty.tmp"
+(cd "$outside" && WT_SHELL_INTEGRATION=1 WT_FZF_COMMAND="$fake_fzf" WT_TEST_INPUT_LOG="$root/all-input-verbose.log" "$WT_BIN" listall -i -v > /dev/null)
+assert_match '^  NAME[[:space:]]+STATUS' "$root/all-input-verbose.log"
+assert_match '^  other-wt[[:space:]]+clean' "$root/all-input-verbose.log"
+
 # The follow-up command the shell wrapper runs works from outside the repo.
 (cd "$outside" && "$WT_BIN" free "$other_wt" --force > "$root/free-outside.log")
 assert_eq '' "$(git -C "$other_root/repo-worktrees/free-1" branch --show-current)"
@@ -133,3 +147,11 @@ PATH="$(dirname "$WT_BIN"):$PATH" WT_FZF_COMMAND="$fake_fzf" WT_SELECT_NAME=work
   zsh -lc "source '$WT_SHELL'; cd '$outside'; wt; pwd -P" > "$root/wrapper-go.log"
 assert_contains 'Switched to worktree work-one.' "$root/wrapper-go.log"
 assert_eq "$work_one" "$(tail -n1 "$root/wrapper-go.log")"
+
+# -v keeps the wrapper's picker handling, before or after listall -i.
+PATH="$(dirname "$WT_BIN"):$PATH" WT_FZF_COMMAND="$fake_fzf" WT_SELECT_NAME=work-one WT_TEST_ACTION=go \
+  zsh -lc "source '$WT_SHELL'; cd '$outside'; wt -v; pwd -P" > "$root/wrapper-go-verbose.log"
+assert_eq "$work_one" "$(tail -n1 "$root/wrapper-go-verbose.log")"
+PATH="$(dirname "$WT_BIN"):$PATH" WT_FZF_COMMAND="$fake_fzf" WT_SELECT_NAME=work-one WT_TEST_ACTION=go \
+  zsh -lc "source '$WT_SHELL'; cd '$outside'; wt listall -v -i; pwd -P" > "$root/wrapper-listall-verbose.log"
+assert_eq "$work_one" "$(tail -n1 "$root/wrapper-listall-verbose.log")"

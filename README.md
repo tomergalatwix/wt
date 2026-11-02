@@ -34,10 +34,10 @@ free worktree into place immediately, so shell integration can switch to it
 right away. Fetching, checkout/rebase, dependency installation, and pool
 compaction then continue in the background.
 
-While allocation is running, `wt list` shows `setup` in the status column.
+While allocation is running, `wt list -v` shows `setup` in the status column.
 `free`, `realloc`, and `remove` are blocked until it finishes. Allocation prints
 the background log path; use it for live progress or complete failure output.
-Failed setup is shown as `failed` in `wt list` and keeps its log for diagnosis.
+Failed setup is shown as `failed` in `wt list -v` and keeps its log for diagnosis.
 
 Use `--verbose` (or `-v`) to retain detailed Git/package-manager output in the
 background setup log for troubleshooting:
@@ -142,6 +142,7 @@ List worktrees:
 
 ```bash
 wt list
+wt list -v   # adds a STATUS column
 ```
 
 List worktrees of every known repo, from any directory:
@@ -241,8 +242,10 @@ wt
 You will see a worktree picker with:
 
 ```text
-NAME  STATUS  LAST MODIFIED  BRANCH
+NAME  LAST MODIFIED  BRANCH
 ```
+
+`wt -v` adds a `STATUS` column, like `wt list -v`.
 
 The main picker also includes:
 
@@ -278,10 +281,13 @@ a git repo opens it too. The actions are the same, minus `Add new worktree`.
 Commands given an absolute worktree path (e.g. `wt free /path/to/worktree`)
 act on that worktree's repo, so they work from any directory.
 
-The list and picker do not scan worktree contents for changes. The `STATUS`
-column shows `-`, or `setup`/`failed` for background setup. Commands
-that can discard or reuse worktrees (`free`, `alloc`, and `realloc`) still run
-full clean checks before mutating anything.
+By default the list and picker do not scan worktree contents for changes, and
+have no `STATUS` column. `--verbose`/`-v` (on `wt`, `wt list`, and
+`wt listall [-i]`) adds it: `clean`, `N changed` (from `git status`), or
+`setup`/`failed` for background setup. It runs `git status` for every worktree
+in parallel, so on large repos it takes about a second instead of under 100ms.
+Commands that can discard or reuse worktrees (`free`, `alloc`, and `realloc`)
+always run full clean checks before mutating anything.
 
 Nothing is cached: every list reads live Git state with a fixed handful of
 processes per repo, so changes made outside `wt` show up immediately.

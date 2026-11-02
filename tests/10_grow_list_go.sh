@@ -22,9 +22,18 @@ assert_contains '3 worktrees total' "$root/list.log"
 
 printf 'tracked\n' >> "$root/repo-worktrees/free-1/README.md"
 printf 'untracked\n' > "$root/repo-worktrees/free-2/generated.tmp"
-(cd "$REPO" && "$WT_BIN" list > "$root/list-status.log")
-assert_eq '-' "$(awk '$1 == "free-1" { print $2 }' "$root/list-status.log")"
-assert_eq '-' "$(awk '$1 == "free-2" { print $2 }' "$root/list-status.log")"
+assert_not_contains 'STATUS' "$root/list.log"
+(cd "$REPO" && "$WT_BIN" list -v > "$root/list-status.log")
+assert_contains 'STATUS' "$root/list-status.log"
+assert_eq 'clean' "$(awk '$1 == "main" { print $2 }' "$root/list-status.log")"
+assert_eq '1 changed' "$(awk '$1 == "free-1" { print $2, $3 }' "$root/list-status.log")"
+assert_eq '1 changed' "$(awk '$1 == "free-2" { print $2, $3 }' "$root/list-status.log")"
+(cd "$REPO" && "$WT_BIN" -v list > "$root/list-status-global.log")
+assert_eq '1 changed' "$(awk '$1 == "free-1" { print $2, $3 }' "$root/list-status-global.log")"
+printf 'another\n' > "$root/repo-worktrees/free-1/other.tmp"
+(cd "$REPO" && "$WT_BIN" list --verbose > "$root/list-status-long.log")
+assert_eq '2 changed' "$(awk '$1 == "free-1" { print $2, $3 }' "$root/list-status-long.log")"
+rm -f "$root/repo-worktrees/free-1/other.tmp"
 
 # Changes made outside wt show up on the very next list.
 git -C "$root/repo-worktrees/free-2" checkout -q -b outside-wt

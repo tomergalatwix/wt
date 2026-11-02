@@ -62,7 +62,8 @@ template. Bare `mktemp` / `mktemp -t` on macOS ignore `TMPDIR`.
   (`git worktree list`, one batched `stat`, one `date`), never per worktree,
   and never scanning worktree contents (`git status`, `diff-index`,
   `ls-files --others`). `tests/80_list_performance.sh` counts git/stat calls to
-  enforce this. On these paths prefer bash builtins and `REPLY`-returning
+  enforce this. The opt-in `--verbose` STATUS column is the one exception:
+  `add_worktree_status` runs `git status` per worktree, all in parallel. On these paths prefer bash builtins and `REPLY`-returning
   helpers over `$(...)`, `basename`, or pipelines — each fork costs ~10-15ms on
   macOS.
 - **Repo registry.** `main` calls `register_repo` for every repo-scoped
