@@ -1936,7 +1936,9 @@ cmd_free() {
     esac
     shift
   done
-  [[ -n "$query" ]] || die "Usage: wt free <branch|worktree-query> [--force|-f]"
+  if [[ -z "$query" ]]; then
+    query="$(git rev-parse --show-toplevel 2>/dev/null)" || die "Usage: wt free [branch|worktree-query] [--force|-f]"
+  fi
   info "Freeing $query..."
   verbose_info "Free requested for: $query"
   verbose_info "Pool: $pool"
@@ -2078,7 +2080,7 @@ Usage:
   wt list [--verbose|-v]
   wt listall [-i|--interactive] [--verbose|-v]
   wt discover [DIR...]
-  wt free <query> [--force|-f] [--verbose]
+  wt free [query] [--force|-f] [--verbose]
   wt remove <query> [--force|-f] [--yes]
   wt update
   wt version
@@ -2093,7 +2095,7 @@ Behavior:
   - listall: lists worktrees of every repo wt has been used in, from anywhere; -i opens a picker across them.
   - wt with no arguments outside a repo opens that all-repos picker.
   - discover: registers repos with a <repo>-worktrees pool up to 3 levels below DIR (default: $HOME).
-  - free: detaches HEAD and renames worktree to smallest available free-N.
+  - free: detaches HEAD and renames worktree to smallest available free-N; without a query, frees the current worktree.
   - remove: deletes a pool worktree after confirmation; main is protected.
   - update: reinstalls the latest release from GitHub (WT_REPO_REF=master for unreleased changes),
     then registers repos like discover. wt checks for a new release once a day in the background

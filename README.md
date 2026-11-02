@@ -156,7 +156,7 @@ free-3              2 weeks ago       (detached HEAD)
 | `wt grow [--size N]` | Add reusable `free-N` worktrees to the pool. |
 | `wt alloc <branch>` | Allocate a new branch, or check out an existing one, in a free worktree. |
 | `wt realloc <query> <branch>` | Free a selected worktree and allocate a branch into the same slot. |
-| `wt free <query>` | Detach a worktree and return it to the free pool. |
+| `wt free [query]` | Detach a worktree (default: the current one) and return it to the free pool. |
 | `wt remove <query>` | Delete a worktree from the pool. |
 | `wt discover [DIR...]` | Register repos that have a `<repo>-worktrees` pool. |
 | `wt update` | Reinstall the latest release from GitHub. |
@@ -175,7 +175,7 @@ wt go <query> [--print-path]
 wt list [--verbose|-v]
 wt listall [-i|--interactive] [--verbose|-v]
 wt discover [DIR...]
-wt free <query> [--force|-f] [--verbose]
+wt free [query] [--force|-f] [--verbose]
 wt remove <query> [--force|-f] [--yes]
 wt update
 wt version
@@ -252,6 +252,7 @@ dependency installation instead of failing the worktree operation.
 
 ```bash
 wt free my-feature                 # detach and return to the pool
+wt free                            # free the worktree you are in
 wt free my-feature --force         # or -f: discard dirty changes without asking
 wt realloc my-feature next-branch  # reuse this slot for another branch
 wt remove my-feature               # delete the worktree (asks first)

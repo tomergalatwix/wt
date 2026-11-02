@@ -27,6 +27,16 @@ free_pwd="$(tail -n1 "$root/free-pwd.log")"
 assert_eq "$(cd "$root/repo-worktrees/free-1/subdir" && pwd -P)" "$free_pwd"
 assert_not_contains '__WT_FREED__' "$root/free.log"
 
+# Without a query, free frees the worktree the shell is in.
+git -C "$REPO" worktree add -q "$root/repo-worktrees/current" -b current origin/master
+mkdir -p "$root/repo-worktrees/current/subdir"
+PATH="$(dirname "$WT_BIN"):$PATH" zsh -lc "source '$WT_SHELL'; cd '$root/repo-worktrees/current/subdir'; WT_COLOR=0 wt free > '$root/free-current.log'; pwd" > "$root/free-current-pwd.log"
+assert_contains 'Freed to: free-2' "$root/free-current.log"
+assert_eq "$(cd "$root/repo-worktrees/free-2/subdir" && pwd -P)" "$(tail -n1 "$root/free-current-pwd.log")"
+test ! -e "$root/repo-worktrees/current" || fail 'free without a query should free the current worktree'
+(cd "$REPO" && "$WT_BIN" free > "$root/free-main.log" 2>&1) && fail 'free in main should refuse'
+assert_contains "'main' is the primary checkout" "$root/free-main.log"
+
 # An open shell picks up a changed wrapper file on its next wt call.
 cp "$WT_SHELL" "$root/wt.zsh"
 PATH="$(dirname "$WT_BIN"):$PATH" zsh -lc "source '$root/wt.zsh'; cd '$REPO'; wt list > /dev/null; printf '\\n__wt_reloaded() { print reloaded; }\\n' >> '$root/wt.zsh'; touch -t 203001010000 '$root/wt.zsh'; wt list > /dev/null; __wt_reloaded" > "$root/reload.log" 2>&1
