@@ -1,0 +1,2 @@
+# The tests source lib.sh through a runtime path shellcheck cannot follow.
+disable=SC1091

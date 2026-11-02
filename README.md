@@ -1,7 +1,7 @@
 # wt
 
 `wt` is a small Git worktree helper for keeping a reusable pool of local worktrees.
-The idea is burrowed from this blog post: https://daveschumaker.net/tag/worktrees/
+The idea is borrowed from this blog post: https://daveschumaker.net/tag/worktrees/
 
 It gives you:
 
