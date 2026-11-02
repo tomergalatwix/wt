@@ -521,36 +521,6 @@ all_worktrees() {
   all_worktree_records "$repo" | cut -d'|' -f1
 }
 
-status_jobs() {
-  local jobs="${WT_STATUS_JOBS:-24}"
-  if [[ ! "$jobs" =~ ^[0-9]+$ || "$jobs" -lt 1 ]]; then
-    jobs=24
-  fi
-  printf '%s\n' "$jobs"
-}
-
-worktree_status_records() {
-  (($# > 0)) || return 0
-
-  local jobs
-  jobs="$(status_jobs)"
-  printf '%s\0' "$@" |
-    xargs -0 -n 1 -P "$jobs" sh -c '
-      wt=$1
-      if git -C "$wt" diff-index --quiet HEAD -- 2>/dev/null; then
-        status=clean
-      else
-        code=$?
-        if [ "$code" -eq 1 ]; then
-          status=dirty
-        else
-          status=unknown
-        fi
-      fi
-      printf "%s\t%s\n" "$wt" "$status"
-    ' sh
-}
-
 cache_ttl() {
   local ttl="$WT_CACHE_TTL"
   if [[ ! "$ttl" =~ ^[0-9]+$ ]]; then
@@ -635,7 +605,7 @@ ensure_setup_is_finished() {
 
 worktree_rows_cache_file() {
   local repo="$1"
-  printf '%s/%s.rows\n' "$(cache_dir)" "$(cache_key "$repo")"
+  printf '%s/%s.metadata.rows\n' "$(cache_dir)" "$(cache_key "$repo")"
 }
 
 clear_worktree_rows_cache() {
@@ -646,24 +616,12 @@ clear_worktree_rows_cache() {
 worktree_rows_uncached() {
   local repo="$1"
   local records=()
-  local paths=()
   local record path rest branch name
 
   while IFS= read -r record; do
     [[ -n "$record" ]] || continue
     records+=("$record")
-    path="${record%%|*}"
-    paths+=("$path")
   done < <(all_worktree_records "$repo")
-
-  local statuses=()
-  local status_line
-  if ((${#paths[@]} > 0)); then
-    while IFS= read -r status_line; do
-      [[ -n "$status_line" ]] || continue
-      statuses+=("$status_line")
-    done < <(worktree_status_records "${paths[@]}")
-  fi
 
   for record in "${records[@]}"; do
     path="${record%%|*}"
@@ -671,15 +629,7 @@ worktree_rows_uncached() {
     branch="${rest%%|*}"
     name="${rest#*|}"
 
-    local status="unknown"
-    local i status_path
-    for ((i = 0; i < ${#statuses[@]}; i++)); do
-      status_path="${statuses[$i]%%$'\t'*}"
-      if [[ "$status_path" == "$path" ]]; then
-        status="${statuses[$i]#*$'\t'}"
-        break
-      fi
-    done
+    local status="-"
 
     case "$(setup_state "$repo" "$path")" in
       running) status="setup" ;;

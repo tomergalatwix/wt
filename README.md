@@ -247,14 +247,13 @@ worktree picker.
 The picker and `wt list` show in-use worktrees first by recent activity. Free
 slots are always grouped at the bottom and sorted lexicographically.
 
-For speed, the `STATUS` column only checks tracked changes with Git diff
-metadata. Untracked files are ignored in `wt list` and the picker. Commands
+The list and picker do not scan worktree contents for changes. The `STATUS`
+column shows `-`, or `setup`/`failed` for background setup. Commands
 that can discard or reuse worktrees (`free`, `alloc`, and `realloc`) still run
 full clean checks before mutating anything.
 
 Display rows are cached for 5 minutes by default. Set `WT_CACHE_TTL=<seconds>`
-to tune that, or `WT_CACHE_TTL=0` to force a fresh scan. Status checks run in
-parallel; set `WT_STATUS_JOBS=<n>` to override the default fanout.
+to tune that, or `WT_CACHE_TTL=0` to force a fresh metadata listing.
 
 ## Notes
 
