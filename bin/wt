@@ -1192,15 +1192,19 @@ cmd_listall() {
   info "$total worktrees across ${#LISTALL_REPOS[@]} $noun"
 }
 
-# fzf --expect prints the pressed key (empty for Enter) on the first line.
-# Prints the selected line; fails on Backspace or an empty selection.
+# Cmd+Left (sent as ctrl-a or home, depending on the terminal) prints "back"
+# before accepting. fzf exits 1 when nothing matches, so callers check
+# fzf_went_back before treating a failure as Esc.
+FZF_BACK_BIND='ctrl-a:print(back)+accept,home:print(back)+accept'
+
+fzf_went_back() {
+  [[ "${1%%$'\n'*}" == "back" ]]
+}
+
+# Prints the selected line; fails on back or an empty selection.
 fzf_selection() {
   local raw="$1"
-  [[ "$raw" == "backspace" ]] && return 1
-  if [[ "$raw" == *$'\n'* ]]; then
-    [[ "${raw%%$'\n'*}" == "backspace" ]] && return 1
-    raw="${raw#*$'\n'}"
-  fi
+  fzf_went_back "$raw" && return 1
   [[ -n "$raw" ]] || return 1
   printf '%s\n' "$raw"
 }
@@ -1237,13 +1241,13 @@ pick_action() {
         --reverse \
         --cycle \
         --ansi \
-        --expect=backspace \
-        --footer='Esc: exit  |  Backspace: back' \
+        --bind="$FZF_BACK_BIND" \
+        --footer='Esc: exit  |  ⌘←: back' \
         --header="Chosen worktree: $label"$'\n'"Choose action:" \
         --delimiter=$'\t' \
         --with-nth=2 \
         --prompt='> '
-  )" || return 0
+  )" || fzf_went_back "$action_raw" || return 0
   action_selection="$(fzf_selection "$action_raw")" || return 10
   action="$(awk -F $'\t' '{ print $1 }' <<<"$action_selection")"
 
@@ -1346,13 +1350,13 @@ cmd_interactive() {
           --height=80% \
           --reverse \
           --cycle \
-          --expect=backspace \
-          --footer='Esc: exit  |  Backspace: exit' \
+          --bind="$FZF_BACK_BIND" \
+          --footer='Esc: exit  |  ⌘←: exit' \
           --header-lines=1 \
           --delimiter=$'\t' \
           --with-nth=1 \
           --prompt='Choose worktree> '
-    )" || return 0
+    )" || fzf_went_back "$selection_raw" || return 0
     selection="$(fzf_selection "$selection_raw")" || return 0
 
     local name path
@@ -1417,13 +1421,13 @@ cmd_interactive_all() {
           --reverse \
           --cycle \
           --ansi \
-          --expect=backspace \
-          --footer='Esc: exit  |  Backspace: exit' \
+          --bind="$FZF_BACK_BIND" \
+          --footer='Esc: exit  |  ⌘←: exit' \
           --header-lines=1 \
           --delimiter=$'\t' \
           --with-nth=1 \
           --prompt='Choose worktree> '
-    )" || return 0
+    )" || fzf_went_back "$selection_raw" || return 0
     selection="$(fzf_selection "$selection_raw")" || return 0
 
     local name path repo

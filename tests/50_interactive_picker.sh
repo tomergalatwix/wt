@@ -13,9 +13,10 @@ cat > "$fake_fzf" <<'FAKE_FZF'
 set -euo pipefail
 input="$(cat)"
 [[ " $* " == *" --cycle "* ]] || { echo "picker should wrap around" >&2; exit 49; }
+[[ "$*" != *"--expect"* ]] || { echo "an --expect key would exit while typing" >&2; exit 48; }
 case "$*" in
   *"Choose action:"*)
-    [[ "$*" == *"Esc: exit"* && "$*" == *"Backspace: back"* ]] || exit 50
+    [[ "$*" == *"Esc: exit"* && "$*" == *"⌘←: back"* ]] || exit 50
     if [[ -n "${WT_ASSERT_HEADER:-}" && "$*" != *"Chosen worktree: ${WT_ASSERT_HEADER}"* ]]; then
       echo "missing action header" >&2
       exit 51
@@ -47,7 +48,7 @@ case "$*" in
     awk -F '\t' -v action="${WT_TEST_ACTION:-go}" '$1 == action { print; exit }' <<<"$input"
     ;;
   *)
-    [[ "$*" == *"Esc: exit"* && "$*" == *"Backspace: exit"* ]] || exit 60
+    [[ "$*" == *"Esc: exit"* && "$*" == *"⌘←: exit"* ]] || exit 60
     [[ -z "${WT_TEST_INPUT_LOG:-}" ]] || printf '%s\n' "$input" > "$WT_TEST_INPUT_LOG"
     if [[ "${WT_ASSERT_FREE_BOTTOM_LEX:-0}" == 1 ]]; then
       prev_free=""

@@ -267,8 +267,9 @@ alloc               allocate or checkout a branch in this free worktree
 `free` and `realloc` are only shown for non-free worktrees.
 `alloc` is only shown for `free-N` worktrees.
 `Add new worktree` runs `wt grow`.
-`Esc` exits the picker; `Backspace` returns from the action picker to the
-worktree picker.
+`Esc` exits the picker; `⌘←` returns from the action picker to the worktree
+picker (and exits the worktree picker). Terminals send `⌘←` as `ctrl-a` or
+`Home`, so both work; `Backspace` only edits the search.
 
 The picker and `wt list` show in-use worktrees first by recent activity. Free
 slots are always grouped at the bottom and sorted lexicographically.

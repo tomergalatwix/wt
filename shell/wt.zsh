@@ -58,7 +58,7 @@ __wt_run_and_cd_freed() {
   return 0
 }
 
-wt() {
+__wt_main() {
   local -a _wt_global_args
   while [[ "${1:-}" == "--verbose" || "${1:-}" == "-v" ]]; do
     _wt_global_args+=("$1")
@@ -174,3 +174,6 @@ wt() {
 
   command wt "${_wt_global_args[@]}" "$@"
 }
+
+# Kept to one line so `which wt` stays short; the binary is `whence -p wt`.
+wt() { __wt_main "$@"; }
