@@ -1052,23 +1052,32 @@ cmd_listall() {
   fi
 
   local all_rows=()
-  local i
+  local order=()
+  local i stats
   for ((i = 0; i < ${#repos[@]}; i++)); do
     all_rows+=("$(worktree_rows "${repos[$i]}")")
+    # "<worktree count>|<newest mtime>|<index>"
+    stats="$(printf '%s\n' "${all_rows[$i]}" |
+      awk -F'|' 'NF { c++; if ($1 > m) m = $1 } END { printf "%d|%d", c, m }')"
+    order+=("$stats|$i")
   done
 
   local widths
   widths="$(printf '%s\n' "${all_rows[@]}" | worktree_table_widths)"
 
+  # Most worktrees first; ties go to the repo with the most recent worktree.
   local total=0
   local tilde='~'
-  for ((i = 0; i < ${#repos[@]}; i++)); do
-    ((i == 0)) || printf '\n'
+  local first=1
+  local count
+  while IFS='|' read -r count _ i; do
+    ((first)) || printf '\n'
+    first=0
     title "$(basename "${repos[$i]}")  ${repos[$i]/#"$HOME"/$tilde}"
     # shellcheck disable=SC2086 # widths are two integers
     printf '%s\n' "${all_rows[$i]}" | print_worktree_table $widths
-    total=$((total + $(count_rows "${all_rows[$i]}")))
-  done
+    total=$((total + count))
+  done < <(printf '%s\n' "${order[@]}" | LC_ALL=C sort -t'|' -k1,1nr -k2,2nr)
 
   local noun=repos
   ((${#repos[@]} == 1)) && noun=repo
