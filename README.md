@@ -493,6 +493,8 @@ Issues and pull requests are welcome. Read [AGENTS.md](AGENTS.md) first: it
 covers the layout, invariants and conventions, and it applies to humans too.
 Commits follow [Conventional Commits](https://www.conventionalcommits.org/).
 
+Questions or ideas? Reach me at [tomergal2000@gmail.com](mailto:tomergal2000@gmail.com).
+
 ```bash
 ./lint.sh                             # shellcheck + zsh syntax check
 ./test.sh                             # the full local CLI suite
