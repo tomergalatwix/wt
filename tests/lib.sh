@@ -64,8 +64,10 @@ assert_not_match() {
 }
 
 new_test_root() {
+  local tmp="${TMPDIR:-/tmp}"
   local root
-  root="$(mktemp -d)"
+  # Strip the trailing slash so paths match what git reports.
+  root="$(mktemp -d "${tmp%/}/wt-test.XXXXXX")"
   TEST_ROOTS+=("$root")
   printf '%s\n' "$root"
 }

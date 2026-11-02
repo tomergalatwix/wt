@@ -108,7 +108,7 @@ create_repo_fixture "$invalid_base_root"
   "$WT_BIN" alloc --base missing-base feature/invalid-base > "$invalid_base_root/invalid-base-alloc.log" 2>&1
 )
 invalid_base_log="$(setup_log_from_alloc_output "$invalid_base_root/invalid-base-alloc.log")"
-for i in {1..100}; do
+for _ in {1..100}; do
   (cd "$REPO" && WT_CACHE_TTL=0 "$WT_BIN" list) > "$invalid_base_root/invalid-base-list.log"
   grep -Eq '^invalid-base[[:space:]]+failed' "$invalid_base_root/invalid-base-list.log" && break
   sleep 0.1

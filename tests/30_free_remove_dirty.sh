@@ -20,7 +20,7 @@ assert_contains 'discarding changes because --force/-f was provided' "$root/free
 assert_not_match '^Output:$' "$root/free-force.log"
 assert_not_match '^\(none\)$' "$root/free-force.log"
 free_path="$root/repo-worktrees/free-1"
-! grep -q 'dirty' "$free_path/README.md"
+assert_not_contains 'dirty' "$free_path/README.md"
 test -z "$(git -C "$free_path" status --porcelain)"
 
 git -C "$REPO" worktree add -q "$root/remove-me" -b remove-me origin/master
@@ -41,5 +41,5 @@ assert_not_match '^\(none\)$' "$root/realloc-force.log"
 new_path="$root/repo-worktrees/feature/dirty-realloc"
 test -d "$new_path"
 assert_eq 'feature/dirty-realloc' "$(git -C "$new_path" branch --show-current)"
-! grep -q 'carry' "$new_path/README.md"
+assert_not_contains 'carry' "$new_path/README.md"
 test -z "$(git -C "$new_path" status --porcelain)"

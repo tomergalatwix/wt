@@ -105,7 +105,7 @@ run_logged() {
   local label="$1"
   shift
   local tmp status
-  tmp="$(mktemp -t wt-output.XXXXXX)" || return $?
+  tmp="$(mktemp "${TMPDIR:-/tmp}/wt-output.XXXXXX")" || return $?
 
   verbose_enabled && phase "$label"
   if ! verbose_enabled && [[ -t 2 ]]; then
@@ -135,7 +135,7 @@ run_logged_in_dir() {
   local dir="$2"
   shift 2
   local tmp status
-  tmp="$(mktemp -t wt-output.XXXXXX)" || return $?
+  tmp="$(mktemp "${TMPDIR:-/tmp}/wt-output.XXXXXX")" || return $?
 
   verbose_enabled && phase "$label"
   if ! verbose_enabled && [[ -t 2 ]]; then
@@ -1655,7 +1655,7 @@ cmd_remove() {
 
 cmd_update() {
   local tmp raw_base
-  tmp="$(mktemp -t wt-install.XXXXXX)"
+  tmp="$(mktemp "${TMPDIR:-/tmp}/wt-install.XXXXXX")"
   raw_base="$(repo_raw_base)"
 
   info "Downloading installer from: $raw_base/install.sh"

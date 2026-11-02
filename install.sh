@@ -65,11 +65,14 @@ fi
 
 chmod +x "$INSTALL_DIR/wt"
 
+# shellcheck disable=SC2016 # literal $HOME is written to the rc file
 source_line='source "$HOME/.config/wt/wt.zsh"'
+# shellcheck disable=SC2016
 path_line='export PATH="$PATH:$HOME/.local/bin"'
 
 touch "$SHELL_RC"
 
+# shellcheck disable=SC2016
 if ! grep -Fq '$HOME/.local/bin' "$SHELL_RC"; then
   {
     echo ""

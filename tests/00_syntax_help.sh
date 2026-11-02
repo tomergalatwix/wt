@@ -5,7 +5,7 @@ source "$(dirname "$0")/lib.sh"
 bash -n "$WT_BIN"
 zsh -n "$WT_SHELL"
 
-help_out="$(mktemp)"
+help_out="$(mktemp "${TMPDIR:-/tmp}/wt-help.XXXXXX")"
 "$WT_BIN" help > "$help_out"
 assert_contains 'wt - recycled git worktree pool helper' "$help_out"
 assert_contains 'wt grow [--size N] [--base REF] [--warm]' "$help_out"

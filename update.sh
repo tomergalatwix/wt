@@ -5,7 +5,7 @@ REPO_URL="${WT_REPO_URL:-https://github.com/tomergalatwix/wt.git}"
 REPO_REF="${WT_REPO_REF:-master}"
 REPO_RAW_ROOT="${WT_REPO_RAW_ROOT:-https://raw.githubusercontent.com/tomergalatwix/wt}"
 REPO_RAW_BASE="${WT_REPO_RAW_BASE:-}"
-tmp="$(mktemp -t wt-install.XXXXXX)"
+tmp="$(mktemp "${TMPDIR:-/tmp}/wt-install.XXXXXX")"
 trap 'rm -f "$tmp"' EXIT
 
 resolve_repo_ref() {

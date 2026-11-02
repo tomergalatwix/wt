@@ -4,7 +4,7 @@
 # wrapper handles `wt`, `wt go`, and `wt go -` actions that need `cd`.
 __wt_run_and_cd_alloc() {
   local _wt_marker_file _wt_marker _wt_line _wt_status _wt_alloc_path
-  _wt_marker_file="$(mktemp -t wt-alloc.XXXXXX)" || return $?
+  _wt_marker_file="$(mktemp "${TMPDIR:-/tmp}/wt-alloc.XXXXXX")" || return $?
 
   WT_SHELL_INTEGRATION=1 command wt "$@" | while IFS= read -r _wt_line; do
     if [[ "$_wt_line" == __WT_ALLOCATED__* ]]; then
@@ -29,7 +29,7 @@ __wt_run_and_cd_alloc() {
 
 __wt_run_and_cd_freed() {
   local _wt_marker_file _wt_marker _wt_line _wt_status _wt_payload _wt_old_path _wt_new_path _wt_start_pwd _wt_suffix
-  _wt_marker_file="$(mktemp -t wt-free.XXXXXX)" || return $?
+  _wt_marker_file="$(mktemp "${TMPDIR:-/tmp}/wt-free.XXXXXX")" || return $?
   _wt_start_pwd="$(pwd -P)"
 
   WT_SHELL_INTEGRATION=1 command wt "$@" | while IFS= read -r _wt_line; do
