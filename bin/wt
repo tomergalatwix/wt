@@ -1296,30 +1296,27 @@ cmd_interactive_all() {
   local fzf_cmd
   fzf_cmd="$(fzf_command)"
 
-  local repo_w=4
-  local entry i repo_name
-  for entry in "${LISTALL_ORDER[@]}"; do
-    i="${entry#*|}"
-    repo_name="$(basename "${LISTALL_REPOS[$i]}")"
-    if ((${#repo_name} > repo_w)); then
-      repo_w=${#repo_name}
-    fi
-  done
   local name_w branch_w
   read -r name_w branch_w < <(printf '%s\n' "${LISTALL_ROWS[@]}" | worktree_table_widths)
+  local title_start="" title_end=""
+  if color_enabled; then
+    title_start=$'\033[1;34m'
+    title_end=$'\033[0m'
+  fi
+  local tilde='~'
 
   while :; do
-    local selection_raw selection
+    local selection_raw selection entry i
     selection_raw="$(
       {
-        printf "%-${repo_w}s  %-${name_w}s  %-7s  %-16s  %-${branch_w}s\t%s\t%s\t%s\n" "REPO" "NAME" "STATUS" "LAST MODIFIED" "BRANCH" "__NAME__" "__PATH__" "__REPO__"
+        printf "  %-${name_w}s  %-7s  %-16s  %-${branch_w}s\t%s\t%s\t%s\n" "NAME" "STATUS" "LAST MODIFIED" "BRANCH" "__NAME__" "__PATH__" "__REPO__"
         for entry in "${LISTALL_ORDER[@]}"; do
           i="${entry#*|}"
-          repo_name="$(basename "${LISTALL_REPOS[$i]}")"
+          printf '%s%s%s  %s\t\t__WT_REPO__\t%s\n' "$title_start" "${LISTALL_REPOS[$i]##*/}" "$title_end" "${LISTALL_REPOS[$i]/#"$HOME"/$tilde}" "${LISTALL_REPOS[$i]}"
           printf '%s\n' "${LISTALL_ROWS[$i]}" |
             sort_worktree_rows |
             while IFS='|' read -r _mtime _name _status _mtime_h _branch _path; do
-              printf "%-${repo_w}s  %-${name_w}s  %-7s  %-16s  %-${branch_w}s\t%s\t%s\t%s\n" "$repo_name" "$_name" "$_status" "$_mtime_h" "$_branch" "$_name" "$_path" "${LISTALL_REPOS[$i]}"
+              printf "  %-${name_w}s  %-7s  %-16s  %-${branch_w}s\t%s\t%s\t%s\n" "$_name" "$_status" "$_mtime_h" "$_branch" "$_name" "$_path" "${LISTALL_REPOS[$i]}"
             done
         done
       } |
@@ -1327,6 +1324,7 @@ cmd_interactive_all() {
           --height=80% \
           --reverse \
           --cycle \
+          --ansi \
           --expect=backspace \
           --footer='Esc: exit  |  Backspace: exit' \
           --header-lines=1 \
@@ -1341,6 +1339,8 @@ cmd_interactive_all() {
     path="$(awk -F $'\t' '{ print $3 }' <<<"$selection")"
     repo="$(awk -F $'\t' '{ print $4 }' <<<"$selection")"
     [[ -n "$path" && -n "$repo" ]] || die "Could not resolve selected worktree path."
+    # Repo titles only separate the groups.
+    [[ "$path" == "__WT_REPO__" ]] && continue
 
     local rc=0
     pick_action "$repo" "$path" "$name" "$name ($(basename "$repo"))" "$fzf_cmd" || rc=$?

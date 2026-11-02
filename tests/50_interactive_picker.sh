@@ -48,6 +48,7 @@ case "$*" in
     ;;
   *)
     [[ "$*" == *"Esc: exit"* && "$*" == *"Backspace: exit"* ]] || exit 60
+    [[ -z "${WT_TEST_INPUT_LOG:-}" ]] || printf '%s\n' "$input" > "$WT_TEST_INPUT_LOG"
     if [[ "${WT_ASSERT_FREE_BOTTOM_LEX:-0}" == 1 ]]; then
       prev_free=""
       seen_free=0
@@ -111,8 +112,12 @@ other_wt="$(cd "$other_root/repo-worktrees/other-wt" && pwd -P)"
 outside="$root/outside"
 mkdir -p "$outside"
 
-output="$(cd "$outside" && WT_SHELL_INTEGRATION=1 WT_FZF_COMMAND="$fake_fzf" WT_SELECT_NAME=other-wt WT_TEST_ACTION=free WT_ASSERT_HEADER='other-wt (repo)' WT_ASSERT_HAS_FREE=1 "$WT_BIN")"
+output="$(cd "$outside" && WT_SHELL_INTEGRATION=1 WT_FZF_COMMAND="$fake_fzf" WT_SELECT_NAME=other-wt WT_TEST_ACTION=free WT_ASSERT_HEADER='other-wt (repo)' WT_ASSERT_HAS_FREE=1 WT_TEST_INPUT_LOG="$root/all-input.log" "$WT_BIN")"
 assert_eq "$(printf '__WT_FREE__\tother-wt\t%s' "$other_wt")" "$output"
+# Repos appear as title rows (one per repo, ahead of its worktrees), not a column.
+[[ "$(awk -F '\t' 'NR == 1 { print $1 }' "$root/all-input.log")" != *REPO* ]] || fail 'picker header still has a REPO column'
+assert_eq 2 "$(awk -F '\t' '$3 == "__WT_REPO__"' "$root/all-input.log" | wc -l | tr -d ' ')"
+assert_eq __WT_REPO__ "$(awk -F '\t' 'NR == 2 { print $3 }' "$root/all-input.log")"
 
 output="$(cd "$first_repo" && WT_SHELL_INTEGRATION=1 WT_FZF_COMMAND="$fake_fzf" WT_SELECT_NAME=other-wt WT_TEST_ACTION=go "$WT_BIN" listall -i)"
 assert_eq "$(printf '__WT_GO__\t%s\tother-wt' "$other_wt")" "$output"

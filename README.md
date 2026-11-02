@@ -272,8 +272,8 @@ slots are always grouped at the bottom and sorted lexicographically.
 
 ### All repos
 
-`wt listall -i` opens the same picker across every registered repo, with a
-`REPO` column, ordered like `wt listall`. Running `wt` with no arguments outside
+`wt listall -i` opens the same picker across every registered repo, grouped
+under a blue title per repo and ordered like `wt listall`. Running `wt` with no arguments outside
 a git repo opens it too. The actions are the same, minus `Add new worktree`.
 Commands given an absolute worktree path (e.g. `wt free /path/to/worktree`)
 act on that worktree's repo, so they work from any directory.
