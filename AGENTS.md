@@ -76,7 +76,8 @@ template. Bare `mktemp` / `mktemp -t` on macOS ignore `TMPDIR`.
 - **Git ops inside worktrees go through `git_wt`**, which reuses the main
   checkout's Lefthook or disables hooks, so missing hook deps never block
   pool management.
-- **Dependency install is best-effort**: a missing lockfile or package manager
+- **Dependency install is opt-in and best-effort**: only `--deps` (alloc/realloc,
+  via `WT_INSTALL_DEPS`) or `grow --warm` installs; a missing lockfile or package manager
   is a skip message, not a failure.
 
 ## Conventions

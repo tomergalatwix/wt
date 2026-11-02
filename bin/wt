@@ -1567,7 +1567,9 @@ finish_allocation() {
   install_cmd="$(install_command_for "$target")"
   lockfile="$(lockfile_for "$target")"
   local needs_install=0
-  if [[ -z "$lockfile" ]]; then
+  if [[ "${WT_INSTALL_DEPS:-0}" != "1" ]]; then
+    info "Dependencies skipped: pass --deps to install them"
+  elif [[ -z "$lockfile" ]]; then
     success "Dependencies skipped: no supported lockfile"
   elif [[ -z "$install_cmd" ]]; then
     warning "Dependencies skipped: found $lockfile, but its package manager is not in PATH"
@@ -1717,6 +1719,7 @@ cmd_alloc() {
         [[ $# -gt 0 ]] || die "--slot requires a value"
         slot_query="$1"
         ;;
+      --deps|--dep) WT_INSTALL_DEPS=1 ;;
       *)
         if [[ -z "$branch" ]]; then
           branch="$1"
@@ -1768,6 +1771,7 @@ cmd_realloc() {
         ;;
       --force|-f) force=1 ;;
       --yes|-y) yes=1 ;;
+      --deps|--dep) WT_INSTALL_DEPS=1 ;;
       *)
         if [[ -z "$query" ]]; then
           query="$1"
@@ -1781,7 +1785,7 @@ cmd_realloc() {
     shift
   done
 
-  [[ -n "$query" ]] || die "Usage: wt realloc <worktree-query> [branch] [--base REF] [--force|-f] [--yes]"
+  [[ -n "$query" ]] || die "Usage: wt realloc <worktree-query> [branch] [--base REF] [--deps] [--force|-f] [--yes]"
   if [[ -z "$branch" ]]; then
     if [[ -t 0 ]]; then
       read -r -p "Branch name: " branch
@@ -1999,8 +2003,8 @@ wt - recycled git worktree pool helper
 Usage:
   wt [--verbose|-v] (interactive picker)
   wt grow [--size N] [--base REF] [--warm] [--verbose]
-  wt alloc [branch] [--base REF] [--verbose]
-  wt realloc <query> [branch] [--base REF] [--force|-f] [--yes] [--verbose]
+  wt alloc [branch] [--base REF] [--deps] [--verbose]
+  wt realloc <query> [branch] [--base REF] [--deps] [--force|-f] [--yes] [--verbose]
   wt go <query> [--print-path]
   wt list [--verbose|-v]
   wt listall [-i|--interactive] [--verbose|-v]
@@ -2011,7 +2015,8 @@ Usage:
 
 Behavior:
   - grow: adds new detached free-N slots to the reusable pool.
-  - alloc: creates the worktree immediately; checkout/rebase/dependencies continue in background.
+  - alloc: creates the worktree immediately; fetch and checkout/rebase continue in background.
+    --deps also installs dependencies from the lockfile (off by default).
   - realloc: frees a selected worktree, then allocates a branch into that same slot.
   - list: shows in-use worktrees by recency, then free slots lexicographically.
     --verbose adds a STATUS column (clean, N changed, setup, failed); it runs git status per worktree, so it is slower.

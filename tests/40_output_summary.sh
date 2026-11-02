@@ -44,7 +44,7 @@ create_repo_fixture_with_yarn "$root"
 (
   cd "$REPO"
   PATH="$fake_bin:$PATH" "$WT_BIN" grow --size 3 > "$root/grow.log"
-  PATH="$fake_bin:$PATH" "$WT_BIN" alloc feature/output > "$root/alloc.log" 2>&1
+  PATH="$fake_bin:$PATH" "$WT_BIN" alloc feature/output --deps > "$root/alloc.log" 2>&1
 )
 test -d "$root/repo-worktrees/feature/output"
 (cd "$REPO" && "$WT_BIN" list -v) > "$root/running-list.log"
@@ -84,6 +84,29 @@ assert_not_match '^Output:$' "$root/alloc.log"
 assert_not_match '^\(none\)$' "$root/alloc.log"
 assert_not_match '^fake-yarn-line-[0-9]+$' "$root/alloc.log"
 
+# Without --deps, alloc and realloc only do the git work.
+nodeps_root="$(new_test_root)"
+nodeps_bin="$nodeps_root/bin"
+make_fake_yarn "$nodeps_bin"
+create_repo_fixture_with_yarn "$nodeps_root"
+(
+  cd "$REPO"
+  PATH="$nodeps_bin:$PATH" "$WT_BIN" grow --size 2 > /dev/null
+  PATH="$nodeps_bin:$PATH" "$WT_BIN" alloc feature/no-deps > "$nodeps_root/alloc.log" 2>&1
+)
+wait_for_setup "$REPO" "$nodeps_root/repo-worktrees/feature/no-deps" feature/no-deps
+nodeps_log="$(setup_log_from_alloc_output "$nodeps_root/alloc.log")"
+assert_contains 'Dependencies skipped: pass --deps to install them' "$nodeps_log"
+assert_contains 'Allocated: feature/no-deps' "$nodeps_log"
+test ! -e "$nodeps_root/repo-worktrees/feature/no-deps/node_modules" || fail 'alloc without --deps installed dependencies'
+(
+  cd "$REPO"
+  PATH="$nodeps_bin:$PATH" "$WT_BIN" realloc no-deps feature/realloc-deps --deps --yes > "$nodeps_root/realloc.log" 2>&1
+)
+wait_for_setup "$REPO" "$nodeps_root/repo-worktrees/feature/realloc-deps" feature/realloc-deps
+assert_contains 'Dependencies installed' "$(setup_log_from_alloc_output "$nodeps_root/realloc.log")"
+test -d "$nodeps_root/repo-worktrees/feature/realloc-deps/node_modules" || fail 'realloc --deps did not install dependencies'
+
 verbose_root="$(new_test_root)"
 verbose_fake_bin="$verbose_root/bin"
 make_fake_yarn "$verbose_fake_bin"
@@ -91,7 +114,7 @@ create_repo_fixture_with_yarn "$verbose_root"
 (
   cd "$REPO"
   PATH="$verbose_fake_bin:$PATH" "$WT_BIN" grow --size 2 > "$verbose_root/grow.log"
-  PATH="$verbose_fake_bin:$PATH" "$WT_BIN" alloc --verbose feature/output-verbose > "$verbose_root/alloc-verbose.log" 2>&1
+  PATH="$verbose_fake_bin:$PATH" "$WT_BIN" alloc --verbose --dep feature/output-verbose > "$verbose_root/alloc-verbose.log" 2>&1
 )
 wait_for_setup "$REPO" "$verbose_root/repo-worktrees/feature/output-verbose" feature/output-verbose
 verbose_setup_log="$(setup_log_from_alloc_output "$verbose_root/alloc-verbose.log")"

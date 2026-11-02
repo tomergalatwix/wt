@@ -25,14 +25,14 @@ Required:
 
 Optional:
 
-- `yarn`, `pnpm`, or `npm` if your repo has the matching lockfile and you want dependency installation after worktree creation
+- `yarn`, `pnpm`, or `npm` if your repo has the matching lockfile and you want `--deps` to install dependencies
 
 ## Output
 
 Mutating commands keep successful default output concise. `wt alloc` moves a
 free worktree into place immediately, so shell integration can switch to it
-right away. Fetching, checkout/rebase, dependency installation, and pool
-compaction then continue in the background.
+right away. Fetching, checkout/rebase, and pool compaction then continue in
+the background. Dependencies are only installed with `--deps`.
 
 While allocation is running, `wt list -v` shows `setup` in the status column.
 `free`, `realloc`, and `remove` are blocked until it finishes. Allocation prints
@@ -187,6 +187,12 @@ Alloc a branch from the fresh remote default branch:
 wt alloc my-feature
 ```
 
+Also install dependencies from the lockfile:
+
+```bash
+wt alloc my-feature --deps
+```
+
 Checkout an existing branch into a free slot:
 
 ```bash
@@ -305,7 +311,7 @@ The main checkout is treated as the anchor checkout. It appears as `main` in
 
 `wt alloc` refreshes from Git directly; it does not rely on local aliases.
 `wt alloc` prints the selected slot and the background log path. Its log records
-fetch/base selection, checkout/rebase, dependency installation, and compaction.
+fetch/base selection, checkout/rebase, dependency installation (with `--deps`), and compaction.
 Long-running commands are shown as phases, and their output is summarized with
 an ellipsis plus the last three lines to avoid overwhelming the terminal.
 Set `WT_COLOR=0` or `NO_COLOR=1` to disable `wt`'s colored status lines.
@@ -327,7 +333,10 @@ git rebase <remote-default-branch> --autostash
 
 Pass `--base <ref>` to allocate a new branch from a different initial base.
 
-Dependency installation is best-effort. If `wt` finds `yarn.lock`,
+Dependency installation is opt-in: pass `--deps` to `alloc` or `realloc`
+(or `--warm` to `grow`). Without it, `alloc` only does the Git work: a fresh
+branch off the remote default branch, or a checkout and rebase of an existing
+one. It is also best-effort. If `wt` finds `yarn.lock`,
 `pnpm-lock.yaml`, or `package-lock.json`, it uses the matching package manager
 when available. If the package manager is missing, `wt` prints that it skipped
 dependency installation instead of failing the worktree operation.
