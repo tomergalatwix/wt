@@ -96,3 +96,35 @@ output="$(cd "$REPO" && WT_SHELL_INTEGRATION=1 WT_FZF_COMMAND="$fake_fzf" WT_SEL
 
 output="$(cd "$REPO" && WT_SHELL_INTEGRATION=1 WT_FZF_COMMAND="$fake_fzf" WT_SELECT_NAME=work-one WT_TEST_ACTION=remove WT_ASSERT_HAS_REMOVE=1 "$WT_BIN")"
 [[ "$output" == __WT_REMOVE__* ]] || fail "expected remove directive, got: $output"
+
+# All-repos picker: `wt listall -i` anywhere, and bare `wt` outside a repo.
+export XDG_STATE_HOME="$root/state"
+first_repo="$REPO"
+other_root="$root/other"
+mkdir -p "$other_root"
+create_repo_fixture "$other_root"
+other_repo="$REPO"
+git -C "$other_repo" worktree add -q "$other_root/repo-worktrees/other-wt" -b other-wt origin/master
+other_wt="$(cd "$other_root/repo-worktrees/other-wt" && pwd -P)"
+(cd "$first_repo" && "$WT_BIN" list > /dev/null)
+(cd "$other_repo" && "$WT_BIN" list > /dev/null)
+outside="$root/outside"
+mkdir -p "$outside"
+
+output="$(cd "$outside" && WT_SHELL_INTEGRATION=1 WT_FZF_COMMAND="$fake_fzf" WT_SELECT_NAME=other-wt WT_TEST_ACTION=free WT_ASSERT_HEADER='other-wt (repo)' WT_ASSERT_HAS_FREE=1 "$WT_BIN")"
+assert_eq "$(printf '__WT_FREE__\tother-wt\t%s' "$other_wt")" "$output"
+
+output="$(cd "$first_repo" && WT_SHELL_INTEGRATION=1 WT_FZF_COMMAND="$fake_fzf" WT_SELECT_NAME=other-wt WT_TEST_ACTION=go "$WT_BIN" listall -i)"
+assert_eq "$(printf '__WT_GO__\t%s\tother-wt' "$other_wt")" "$output"
+
+# The follow-up command the shell wrapper runs works from outside the repo.
+(cd "$outside" && "$WT_BIN" free "$other_wt" --force > "$root/free-outside.log")
+assert_eq '' "$(git -C "$other_root/repo-worktrees/free-1" branch --show-current)"
+test ! -e "$other_wt"
+
+# Through the zsh wrapper, bare `wt` outside a repo picks across repos and cds.
+work_one="$(cd "$root/repo-worktrees/work-one" && pwd -P)"
+PATH="$(dirname "$WT_BIN"):$PATH" WT_FZF_COMMAND="$fake_fzf" WT_SELECT_NAME=work-one WT_TEST_ACTION=go \
+  zsh -lc "source '$WT_SHELL'; cd '$outside'; wt; pwd -P" > "$root/wrapper-go.log"
+assert_contains 'Switched to worktree work-one.' "$root/wrapper-go.log"
+assert_eq "$work_one" "$(tail -n1 "$root/wrapper-go.log")"

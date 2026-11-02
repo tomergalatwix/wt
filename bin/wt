@@ -264,6 +264,17 @@ repo_root() {
   fi
 }
 
+# The repo owning the first absolute-path argument, so commands such as
+# `wt free /path/to/worktree` act on that worktree's repo from any directory.
+repo_root_from_args() {
+  local arg
+  for arg in "$@"; do
+    [[ "$arg" == /* && -d "$arg" ]] || continue
+    (cd "$arg" && repo_root) 2>/dev/null && return 0
+  done
+  return 1
+}
+
 default_base_ref() {
   local repo="$1"
   local remote_ref
@@ -1017,19 +1028,28 @@ cmd_discover() {
   success "Registered $found repo(s) with worktree pools."
 }
 
-cmd_listall() {
-  [[ $# -eq 0 ]] || die "Unknown option for listall: $1"
+# Filled by load_registered_repos. LISTALL_ORDER holds "<worktree count>|<index>"
+# in display order.
+LISTALL_REPOS=()
+LISTALL_ROWS=()
+LISTALL_ORDER=()
 
+# Loads registered repos and their worktree rows, pruning entries that are no
+# longer git repos. Order: most worktrees first; ties go to the repo with the
+# most recent worktree.
+load_registered_repos() {
   local file
   file="$(repos_registry_file)"
-  local repos=()
   local stale=0
   local repo
+  LISTALL_REPOS=()
+  LISTALL_ROWS=()
+  LISTALL_ORDER=()
   if [[ -f "$file" ]]; then
     while IFS= read -r repo; do
       [[ -n "$repo" ]] || continue
       if git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
-        repos+=("$repo")
+        LISTALL_REPOS+=("$repo")
       else
         stale=1
       fi
@@ -1039,50 +1059,174 @@ cmd_listall() {
   if ((stale)); then
     local tmp
     if tmp="$(mktemp "$(dirname "$file")/repos.XXXXXX" 2>/dev/null)"; then
-      if ((${#repos[@]})); then
-        printf '%s\n' "${repos[@]}" > "$tmp"
+      if ((${#LISTALL_REPOS[@]})); then
+        printf '%s\n' "${LISTALL_REPOS[@]}" > "$tmp"
       fi
       mv "$tmp" "$file"
     fi
   fi
 
-  if ((${#repos[@]} == 0)); then
+  ((${#LISTALL_REPOS[@]})) || return 0
+
+  local stats=()
+  local i
+  for ((i = 0; i < ${#LISTALL_REPOS[@]}; i++)); do
+    LISTALL_ROWS+=("$(worktree_rows "${LISTALL_REPOS[$i]}")")
+    # "<worktree count>|<newest mtime>|<index>"
+    stats+=("$(printf '%s\n' "${LISTALL_ROWS[$i]}" |
+      awk -F'|' 'NF { c++; if ($1 > m) m = $1 } END { printf "%d|%d", c, m }')|$i")
+  done
+
+  local count
+  while IFS='|' read -r count _ i; do
+    LISTALL_ORDER+=("$count|$i")
+  done < <(printf '%s\n' "${stats[@]}" | LC_ALL=C sort -t'|' -k1,1nr -k2,2nr)
+}
+
+cmd_listall() {
+  local interactive=0
+  while (($#)); do
+    case "$1" in
+      -i|--interactive) interactive=1 ;;
+      *) die "Unknown option for listall: $1" ;;
+    esac
+    shift
+  done
+
+  load_registered_repos
+  if ((${#LISTALL_REPOS[@]} == 0)); then
     info "No repos registered yet. Run any wt command inside a repo to add it."
     return 0
   fi
 
-  local all_rows=()
-  local order=()
-  local i stats
-  for ((i = 0; i < ${#repos[@]}; i++)); do
-    all_rows+=("$(worktree_rows "${repos[$i]}")")
-    # "<worktree count>|<newest mtime>|<index>"
-    stats="$(printf '%s\n' "${all_rows[$i]}" |
-      awk -F'|' 'NF { c++; if ($1 > m) m = $1 } END { printf "%d|%d", c, m }')"
-    order+=("$stats|$i")
-  done
+  if ((interactive)); then
+    cmd_interactive_all
+    return $?
+  fi
 
   local widths
-  widths="$(printf '%s\n' "${all_rows[@]}" | worktree_table_widths)"
+  widths="$(printf '%s\n' "${LISTALL_ROWS[@]}" | worktree_table_widths)"
 
-  # Most worktrees first; ties go to the repo with the most recent worktree.
   local total=0
   local tilde='~'
   local first=1
-  local count
-  while IFS='|' read -r count _ i; do
+  local entry count i
+  for entry in "${LISTALL_ORDER[@]}"; do
+    count="${entry%%|*}"
+    i="${entry#*|}"
     ((first)) || printf '\n'
     first=0
-    title "$(basename "${repos[$i]}")  ${repos[$i]/#"$HOME"/$tilde}"
+    title "$(basename "${LISTALL_REPOS[$i]}")  ${LISTALL_REPOS[$i]/#"$HOME"/$tilde}"
     # shellcheck disable=SC2086 # widths are two integers
-    printf '%s\n' "${all_rows[$i]}" | print_worktree_table $widths
+    printf '%s\n' "${LISTALL_ROWS[$i]}" | print_worktree_table $widths
     total=$((total + count))
-  done < <(printf '%s\n' "${order[@]}" | LC_ALL=C sort -t'|' -k1,1nr -k2,2nr)
+  done
 
   local noun=repos
-  ((${#repos[@]} == 1)) && noun=repo
+  ((${#LISTALL_REPOS[@]} == 1)) && noun=repo
   printf '\n'
-  info "$total worktrees across ${#repos[@]} $noun"
+  info "$total worktrees across ${#LISTALL_REPOS[@]} $noun"
+}
+
+# fzf --expect prints the pressed key (empty for Enter) on the first line.
+# Prints the selected line; fails on Backspace or an empty selection.
+fzf_selection() {
+  local raw="$1"
+  [[ "$raw" == "backspace" ]] && return 1
+  if [[ "$raw" == *$'\n'* ]]; then
+    [[ "${raw%%$'\n'*}" == "backspace" ]] && return 1
+    raw="${raw#*$'\n'}"
+  fi
+  [[ -n "$raw" ]] || return 1
+  printf '%s\n' "$raw"
+}
+
+# Shows the action menu for a picked worktree and runs (or, with shell
+# integration, emits) the chosen action. Returns 10 when the user goes back.
+pick_action() {
+  local repo="$1"
+  local path="$2"
+  local name="$3"
+  local label="$4"
+  local fzf_cmd="$5"
+
+  local actions
+  actions="$(
+    printf '%s\t%-18s    \033[2m%s\033[0m\n' "go" "go" "cd into this worktree"
+    if [[ "$path" != "$repo" ]] && ! is_free_slot_path "$path"; then
+      printf '%s\t%-18s    \033[2m%s\033[0m\n' "free" "free" "detach and return this worktree to the free pool"
+      printf '%s\t%-18s    \033[2m%s\033[0m\n' "realloc" "realloc" "free this worktree and allocate another branch into it"
+    fi
+    if is_free_slot_path "$path"; then
+      printf '%s\t%-18s    \033[2m%s\033[0m\n' "alloc" "alloc" "allocate a new/existing branch in this free worktree"
+    fi
+    if [[ "$path" != "$repo" ]]; then
+      printf '%s\t%-18s    \033[2m%s\033[0m\n' "remove" "remove" "delete this worktree from the pool"
+    fi
+  )"
+
+  local action_raw action_selection action
+  action_raw="$(
+    printf '%s\n' "$actions" |
+      "$fzf_cmd" \
+        --height=10 \
+        --reverse \
+        --cycle \
+        --ansi \
+        --expect=backspace \
+        --footer='Esc: exit  |  Backspace: back' \
+        --header="Chosen worktree: $label"$'\n'"Choose action:" \
+        --delimiter=$'\t' \
+        --with-nth=2 \
+        --prompt='> '
+  )" || return 0
+  action_selection="$(fzf_selection "$action_raw")" || return 10
+  action="$(awk -F $'\t' '{ print $1 }' <<<"$action_selection")"
+
+  case "$action" in
+    go)
+      if [[ "${WT_SHELL_INTEGRATION:-0}" == "1" ]]; then
+        printf '__WT_GO__\t%s\t%s\n' "$path" "$name"
+      else
+        info "$path"
+        info "Run: cd $path"
+      fi
+      ;;
+    free)
+      if [[ "${WT_SHELL_INTEGRATION:-0}" == "1" ]]; then
+        printf '__WT_FREE__\t%s\t%s\n' "$name" "$path"
+      else
+        die "Shell integration is not loaded. Run: source ~/.config/wt/wt.zsh"
+      fi
+      ;;
+    realloc)
+      if [[ "${WT_SHELL_INTEGRATION:-0}" == "1" ]]; then
+        printf '__WT_REALLOC__\t%s\t%s\n' "$name" "$path"
+      else
+        die "Shell integration is not loaded. Run: source ~/.config/wt/wt.zsh"
+      fi
+      ;;
+    remove)
+      if [[ "${WT_SHELL_INTEGRATION:-0}" == "1" ]]; then
+        printf '__WT_REMOVE__\t%s\t%s\n' "$name" "$path"
+      else
+        die "Shell integration is not loaded. Run: source ~/.config/wt/wt.zsh"
+      fi
+      ;;
+    alloc)
+      if [[ "${WT_SHELL_INTEGRATION:-0}" == "1" ]]; then
+        printf '__WT_ALLOC__\t%s\t%s\n' "$name" "$path"
+      else
+        cmd_alloc "$repo" --slot "$path"
+      fi
+      ;;
+    "")
+      return 0
+      ;;
+    *)
+      die "Unknown action: $action"
+      ;;
+  esac
 }
 
 cmd_interactive() {
@@ -1119,7 +1263,7 @@ cmd_interactive() {
   done
 
   while :; do
-    local selection_raw selection_key selection
+    local selection_raw selection
     selection_raw="$(
       {
         printf "%-${name_w}s  %-7s  %-16s  %-${branch_w}s\t%s\t%s\n" "NAME" "STATUS" "LAST MODIFIED" "BRANCH" "__NAME__" "__PATH__"
@@ -1141,19 +1285,9 @@ cmd_interactive() {
           --with-nth=1 \
           --prompt='Choose worktree> '
     )" || return 0
+    selection="$(fzf_selection "$selection_raw")" || return 0
 
-    selection_key=""
-    selection="$selection_raw"
-    if [[ "$selection_raw" == "backspace" ]]; then
-      return 0
-    elif [[ "$selection_raw" == *$'\n'* ]]; then
-      selection_key="${selection_raw%%$'\n'*}"
-      selection="${selection_raw#*$'\n'}"
-    fi
-    [[ "$selection_key" == "backspace" ]] && return 0
-    [[ -n "$selection" ]] || return 0
-
-    local name path action action_raw action_key action_selection actions
+    local name path
     name="$(awk -F $'\t' '{ print $2 }' <<<"$selection")"
     path="$(awk -F $'\t' '{ print $3 }' <<<"$selection")"
     [[ -n "$path" ]] || die "Could not resolve selected worktree path."
@@ -1166,91 +1300,68 @@ cmd_interactive() {
       return 0
     fi
 
-    actions="$(
-      printf '%s\t%-18s    \033[2m%s\033[0m\n' "go" "go" "cd into this worktree"
-      if [[ "$path" != "$repo" ]] && ! is_free_slot_path "$path"; then
-        printf '%s\t%-18s    \033[2m%s\033[0m\n' "free" "free" "detach and return this worktree to the free pool"
-        printf '%s\t%-18s    \033[2m%s\033[0m\n' "realloc" "realloc" "free this worktree and allocate another branch into it"
-      fi
-      if is_free_slot_path "$path"; then
-        printf '%s\t%-18s    \033[2m%s\033[0m\n' "alloc" "alloc" "allocate a new/existing branch in this free worktree"
-      fi
-      if [[ "$path" != "$repo" ]]; then
-        printf '%s\t%-18s    \033[2m%s\033[0m\n' "remove" "remove" "delete this worktree from the pool"
-      fi
-    )"
+    local rc=0
+    pick_action "$repo" "$path" "$name" "$name" "$fzf_cmd" || rc=$?
+    ((rc == 10)) && continue
+    return "$rc"
+  done
+}
 
-    action_raw="$(
-      printf '%s\n' "$actions" |
+# Picker across every registered repo; expects load_registered_repos to have run.
+cmd_interactive_all() {
+  local fzf_cmd
+  fzf_cmd="$(fzf_command)"
+
+  local repo_w=4
+  local entry i repo_name
+  for entry in "${LISTALL_ORDER[@]}"; do
+    i="${entry#*|}"
+    repo_name="$(basename "${LISTALL_REPOS[$i]}")"
+    if ((${#repo_name} > repo_w)); then
+      repo_w=${#repo_name}
+    fi
+  done
+  local name_w branch_w
+  read -r name_w branch_w < <(printf '%s\n' "${LISTALL_ROWS[@]}" | worktree_table_widths)
+
+  while :; do
+    local selection_raw selection
+    selection_raw="$(
+      {
+        printf "%-${repo_w}s  %-${name_w}s  %-7s  %-16s  %-${branch_w}s\t%s\t%s\t%s\n" "REPO" "NAME" "STATUS" "LAST MODIFIED" "BRANCH" "__NAME__" "__PATH__" "__REPO__"
+        for entry in "${LISTALL_ORDER[@]}"; do
+          i="${entry#*|}"
+          repo_name="$(basename "${LISTALL_REPOS[$i]}")"
+          printf '%s\n' "${LISTALL_ROWS[$i]}" |
+            sort_worktree_rows |
+            while IFS='|' read -r _mtime _name _status _mtime_h _branch _path; do
+              printf "%-${repo_w}s  %-${name_w}s  %-7s  %-16s  %-${branch_w}s\t%s\t%s\t%s\n" "$repo_name" "$_name" "$_status" "$_mtime_h" "$_branch" "$_name" "$_path" "${LISTALL_REPOS[$i]}"
+            done
+        done
+      } |
         "$fzf_cmd" \
-          --height=10 \
+          --height=80% \
           --reverse \
           --cycle \
-          --ansi \
           --expect=backspace \
-          --footer='Esc: exit  |  Backspace: back' \
-          --header="Chosen worktree: $name"$'\n'"Choose action:" \
+          --footer='Esc: exit  |  Backspace: exit' \
+          --header-lines=1 \
           --delimiter=$'\t' \
-          --with-nth=2 \
-          --prompt='> '
+          --with-nth=1 \
+          --prompt='Choose worktree> '
     )" || return 0
+    selection="$(fzf_selection "$selection_raw")" || return 0
 
-    action_key=""
-    action_selection="$action_raw"
-    if [[ "$action_raw" == "backspace" ]]; then
-      continue
-    elif [[ "$action_raw" == *$'\n'* ]]; then
-      action_key="${action_raw%%$'\n'*}"
-      action_selection="${action_raw#*$'\n'}"
-    fi
-    [[ "$action_key" == "backspace" ]] && continue
-    action="$(awk -F $'\t' '{ print $1 }' <<<"$action_selection")"
+    local name path repo
+    name="$(awk -F $'\t' '{ print $2 }' <<<"$selection")"
+    path="$(awk -F $'\t' '{ print $3 }' <<<"$selection")"
+    repo="$(awk -F $'\t' '{ print $4 }' <<<"$selection")"
+    [[ -n "$path" && -n "$repo" ]] || die "Could not resolve selected worktree path."
 
-    case "$action" in
-      go)
-        if [[ "${WT_SHELL_INTEGRATION:-0}" == "1" ]]; then
-          printf '__WT_GO__\t%s\t%s\n' "$path" "$name"
-        else
-          info "$path"
-          info "Run: cd $path"
-        fi
-        ;;
-      free)
-        if [[ "${WT_SHELL_INTEGRATION:-0}" == "1" ]]; then
-          printf '__WT_FREE__\t%s\t%s\n' "$name" "$path"
-        else
-          die "Shell integration is not loaded. Run: source ~/.config/wt/wt.zsh"
-        fi
-        ;;
-      realloc)
-        if [[ "${WT_SHELL_INTEGRATION:-0}" == "1" ]]; then
-          printf '__WT_REALLOC__\t%s\t%s\n' "$name" "$path"
-        else
-          die "Shell integration is not loaded. Run: source ~/.config/wt/wt.zsh"
-        fi
-        ;;
-      remove)
-        if [[ "${WT_SHELL_INTEGRATION:-0}" == "1" ]]; then
-          printf '__WT_REMOVE__\t%s\t%s\n' "$name" "$path"
-        else
-          die "Shell integration is not loaded. Run: source ~/.config/wt/wt.zsh"
-        fi
-        ;;
-      alloc)
-        if [[ "${WT_SHELL_INTEGRATION:-0}" == "1" ]]; then
-          printf '__WT_ALLOC__\t%s\t%s\n' "$name" "$path"
-        else
-          cmd_alloc "$repo" --slot "$path"
-        fi
-        ;;
-      "")
-        return 0
-        ;;
-      *)
-        die "Unknown action: $action"
-        ;;
-    esac
-    return 0
+    local rc=0
+    pick_action "$repo" "$path" "$name" "$name ($(basename "$repo"))" "$fzf_cmd" || rc=$?
+    ((rc == 10)) && continue
+    return "$rc"
   done
 }
 
@@ -1801,7 +1912,7 @@ Usage:
   wt realloc <query> [branch] [--base REF] [--force|-f] [--yes] [--verbose]
   wt go <query> [--print-path]
   wt list
-  wt listall
+  wt listall [-i|--interactive]
   wt discover [DIR...]
   wt free <query> [--force|-f] [--verbose]
   wt remove <query> [--force|-f] [--yes]
@@ -1812,7 +1923,8 @@ Behavior:
   - alloc: creates the worktree immediately; checkout/rebase/dependencies continue in background.
   - realloc: frees a selected worktree, then allocates a branch into that same slot.
   - list: shows in-use worktrees by recency, then free slots lexicographically; setup/failed marks async allocation state.
-  - listall: runs from anywhere; lists worktrees of every repo wt has been used in.
+  - listall: lists worktrees of every repo wt has been used in, from anywhere; -i opens a picker across them.
+  - wt with no arguments outside a repo opens that all-repos picker.
   - discover: registers repos with a <repo>-worktrees pool up to 3 levels below DIR (default: $HOME).
   - free: detaches HEAD and renames worktree to smallest available free-N.
   - remove: deletes a pool worktree after confirmation; main is protected.
@@ -1840,7 +1952,13 @@ main() {
   esac
 
   local repo
-  repo="$(repo_root)"
+  if ! repo="$(repo_root_from_args "$@")" && ! repo="$(repo_root 2>/dev/null)"; then
+    if [[ "$cmd" == "interactive" && $# -eq 0 ]]; then
+      cmd_listall --interactive
+      return $?
+    fi
+    repo_root >/dev/null
+  fi
   register_repo "$repo"
 
   case "$cmd" in

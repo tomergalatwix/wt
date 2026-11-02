@@ -59,9 +59,9 @@ __wt_run_and_cd_freed() {
 }
 
 wt() {
-  if [[ $# -eq 0 ]]; then
+  if [[ $# -eq 0 || ( "$1" == listall && ( "${2:-}" == -i || "${2:-}" == --interactive ) ) ]]; then
     local _wt_result _wt_action _wt_payload _wt_name _wt_path _wt_answer
-    _wt_result="$(WT_SHELL_INTEGRATION=1 command wt)" || return $?
+    _wt_result="$(WT_SHELL_INTEGRATION=1 command wt "$@")" || return $?
     [[ -n "$_wt_result" ]] || return 0
 
     _wt_action="${_wt_result%%$'\t'*}"

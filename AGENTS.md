@@ -81,6 +81,10 @@ template. Bare `mktemp` / `mktemp -t` on macOS ignore `TMPDIR`.
 - The `__WT_*` marker protocol between `bin/wt` and `shell/wt.zsh` is an
   interface: change both sides together and cover it in
   `tests/60_shell_integration.sh`.
+- The wrapper handles markers for bare `wt` and `wt listall -i`; both pickers
+  share `pick_action`. Actions picked in the all-repos picker re-run as
+  `wt <cmd> <abs-path>` from the user's cwd, so `main` resolves the repo from an
+  absolute-path argument first (`repo_root_from_args`) — keep that working.
 - Tests: one numbered file per area, `source "$(dirname "$0")/lib.sh"`, use the
   `assert_*` helpers. Don't use a bare `! cmd` as an assertion — `set -e`
   ignores it; use `assert_not_contains` / `assert_not_match`.
