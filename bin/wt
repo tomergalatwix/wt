@@ -2014,10 +2014,10 @@ Usage:
   wt update
 
 Behavior:
-  - grow: adds new detached free-N slots to the reusable pool.
-  - alloc: creates the worktree immediately; fetch and checkout/rebase continue in background.
-    --deps also installs dependencies from the lockfile (off by default).
-  - realloc: frees a selected worktree, then allocates a branch into that same slot.
+  - grow: adds new detached free-N slots to the reusable pool; --warm also installs dependencies.
+  - alloc: git only by default: a fresh branch off the remote default branch (or checkout + rebase
+    of an existing one), finished in the background. Dependencies are NOT installed unless --deps.
+  - realloc: frees a selected worktree, then allocates a branch into that same slot (same --deps rule).
   - list: shows in-use worktrees by recency, then free slots lexicographically.
     --verbose adds a STATUS column (clean, N changed, setup, failed); it runs git status per worktree, so it is slower.
   - listall: lists worktrees of every repo wt has been used in, from anywhere; -i opens a picker across them.
