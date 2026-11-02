@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+WT_VERSION="dev"
 WT_FREE_PREFIX="${WT_FREE_PREFIX:-free-}"
 WT_REPO_URL="${WT_REPO_URL:-https://github.com/tomergalatwix/wt.git}"
-WT_REPO_REF="${WT_REPO_REF:-master}"
+WT_REPO_REF="${WT_REPO_REF:-latest}"
 WT_REPO_RAW_ROOT="${WT_REPO_RAW_ROOT:-https://raw.githubusercontent.com/tomergalatwix/wt}"
 WT_REPO_RAW_BASE="${WT_REPO_RAW_BASE:-}"
 WT_VERBOSE="${WT_VERBOSE:-0}"
@@ -401,16 +402,84 @@ download_file() {
   fi
 }
 
+latest_release_tag() {
+  git ls-remote --tags --refs "$WT_REPO_URL" 'v*' 2>/dev/null |
+    awk '{ tag = substr($2, 11) } tag ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/ { print tag }' |
+    sort -t. -k1.2,1n -k2,2n -k3,3n | tail -n 1
+}
+
 resolve_repo_ref() {
-  if [[ "$WT_REPO_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
-    printf '%s\n' "$WT_REPO_REF"
+  local ref="$WT_REPO_REF" sha
+  if [[ "$ref" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    printf '%s\n' "$ref"
     return 0
   fi
+  if [[ "$ref" == latest ]]; then
+    ref="$(latest_release_tag || true)"
+    ref="${ref:-master}"
+  fi
 
-  local sha
-  sha="$(git ls-remote "$WT_REPO_URL" "refs/heads/$WT_REPO_REF" 2>/dev/null | awk '{ print $1; exit }')"
-  [[ -n "$sha" ]] || die "Could not resolve $WT_REPO_REF from $WT_REPO_URL. Set WT_REPO_RAW_BASE to install from a custom source."
+  sha="$(git ls-remote "$WT_REPO_URL" "refs/tags/$ref^{}" "refs/tags/$ref" "refs/heads/$ref" 2>/dev/null |
+    awk '/\^\{\}$/ { peeled = $1 } !first { first = $1 } END { print peeled ? peeled : first }')"
+  [[ -n "$sha" ]] || die "Could not resolve $ref from $WT_REPO_URL. Set WT_REPO_RAW_BASE to install from a custom source."
   printf '%s\n' "$sha"
+}
+
+update_state_file() {
+  printf '%s/wt/update-check\n' "${XDG_STATE_HOME:-$HOME/.local/state}"
+}
+
+# True when version $1 (X.Y.Z) is newer than $2.
+version_newer() {
+  local a b i
+  IFS=. read -r -a a <<<"$1"
+  IFS=. read -r -a b <<<"$2"
+  for i in 0 1 2; do
+    ((10#${a[i]:-0} > 10#${b[i]:-0})) && return 0
+    ((10#${a[i]:-0} < 10#${b[i]:-0})) && return 1
+  done
+  return 1
+}
+
+# Refreshes the latest release tag in the background at most once a day, and
+# offers the update an earlier refresh found, so no run waits on the network.
+# State line: <last check> <prompt again after> <latest tag>.
+maybe_offer_update() {
+  local cmd="$1"
+  shift
+  case "$cmd" in help | -h | --help | version | --version | update | go) return 0 ;; esac
+  [[ "$WT_VERSION" != dev && "${WT_NO_UPDATE_CHECK:-0}" != 1 && -t 2 ]] || return 0
+  { : </dev/tty; } 2>/dev/null || return 0
+
+  local file now checked=0 snoozed=0 latest=""
+  file="$(update_state_file)"
+  now="$(date +%s)"
+  if [[ -f "$file" ]]; then
+    read -r checked snoozed latest <"$file" || true
+  fi
+  if ((now - checked >= 86400)) && mkdir -p "${file%/*}" 2>/dev/null; then
+    (
+      trap '' HUP
+      tag="$(latest_release_tag || true)"
+      printf '%s %s %s\n' "$now" "$snoozed" "${tag:-$latest}" >"$file.$$" && mv -f "$file.$$" "$file"
+    ) </dev/null >/dev/null 2>&1 &
+  fi
+
+  latest="${latest#v}"
+  [[ -n "$latest" ]] && ((now >= snoozed)) && version_newer "$latest" "$WT_VERSION" || return 0
+  local answer
+  printf 'wt v%s is available (you have v%s). Update now? [Y/n] ' "$latest" "$WT_VERSION" >/dev/tty
+  IFS= read -r answer </dev/tty || answer=n
+  case "$answer" in
+    "" | y | Y | yes | Yes) ;;
+    *)
+      printf '%s %s v%s\n' "$now" "$((now + 7 * 86400))" "$latest" >"$file" 2>/dev/null || true
+      printf 'Skipped. wt will ask again in a week; run "wt update" any time.\n' >/dev/tty
+      return 0
+      ;;
+  esac
+  cmd_update >&2
+  exec env WT_NO_UPDATE_CHECK=1 WT_VERBOSE="$WT_VERBOSE" "$0" "$cmd" ${1+"$@"}
 }
 
 repo_raw_base() {
@@ -2012,6 +2081,7 @@ Usage:
   wt free <query> [--force|-f] [--verbose]
   wt remove <query> [--force|-f] [--yes]
   wt update
+  wt version
 
 Behavior:
   - grow: adds new detached free-N slots to the reusable pool; --warm also installs dependencies.
@@ -2025,7 +2095,9 @@ Behavior:
   - discover: registers repos with a <repo>-worktrees pool up to 3 levels below DIR (default: $HOME).
   - free: detaches HEAD and renames worktree to smallest available free-N.
   - remove: deletes a pool worktree after confirmation; main is protected.
-  - update: downloads the latest installer from GitHub and reinstalls wt.
+  - update: reinstalls the latest release from GitHub (WT_REPO_REF=master for unreleased changes),
+    then registers repos like discover. wt checks for a new release once a day in the background
+    and asks before updating; WT_NO_UPDATE_CHECK=1 turns that off.
   - go: prints a path normally; with shell integration, changes directory.
   - --verbose on alloc/realloc/grow/free: records detailed background setup output in the allocation log.
 EOF
@@ -2041,8 +2113,11 @@ main() {
     shift
   fi
 
+  maybe_offer_update "$cmd" ${1+"$@"}
+
   case "$cmd" in
     help|-h|--help) cmd_help; return 0 ;;
+    version|--version) printf 'wt %s\n' "$WT_VERSION"; return 0 ;;
     update) cmd_update "$@"; return 0 ;;
     listall) cmd_listall "$@"; return 0 ;;
     discover) cmd_discover "$@"; return 0 ;;

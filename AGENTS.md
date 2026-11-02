@@ -107,6 +107,16 @@ A user-visible change (command, flag, output, env var) usually touches all of:
 3. `README.md` — usage and behavior
 4. `tests/` — including `tests/00_syntax_help.sh` for help text
 
+## Releases
+
+`WT_VERSION` stays `"dev"` on master. The manual **Release** workflow
+(`.github/workflows/release.yml`) runs CI, then tags a commit off master that
+stamps `WT_VERSION`, and publishes a GitHub Release. `install.sh`, `update.sh`
+and `wt update` resolve `WT_REPO_REF` (default `latest`: newest `vX.Y.Z` tag,
+else master) the same way — keep their `resolve_repo_ref` copies in sync.
+`maybe_offer_update` must never block a command on the network: it only
+prompts from the cached `update-check` state and refreshes it in the background.
+
 ## Commits
 
 Conventional Commits (`feat:`, `fix:`, `perf:`, `test:`, `docs:`, `chore:`),

@@ -6,7 +6,7 @@ CONFIG_DIR="${WT_CONFIG_DIR:-$HOME/.config/wt}"
 SHELL_RC="${WT_SHELL_RC:-$HOME/.zshrc}"
 
 REPO_URL="${WT_REPO_URL:-https://github.com/tomergalatwix/wt.git}"
-REPO_REF="${WT_REPO_REF:-master}"
+REPO_REF="${WT_REPO_REF:-latest}"
 REPO_RAW_ROOT="${WT_REPO_RAW_ROOT:-https://raw.githubusercontent.com/tomergalatwix/wt}"
 REPO_RAW_BASE="${WT_REPO_RAW_BASE:-}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,16 +29,27 @@ download_file() {
   fi
 }
 
+latest_release_tag() {
+  git ls-remote --tags --refs "$REPO_URL" 'v*' 2>/dev/null |
+    awk '{ tag = substr($2, 11) } tag ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/ { print tag }' |
+    sort -t. -k1.2,1n -k2,2n -k3,3n | tail -n 1
+}
+
 resolve_repo_ref() {
-  if [[ "$REPO_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
-    printf '%s\n' "$REPO_REF"
+  local ref="$REPO_REF" sha
+  if [[ "$ref" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    printf '%s\n' "$ref"
     return 0
   fi
+  if [[ "$ref" == latest ]]; then
+    ref="$(latest_release_tag || true)"
+    ref="${ref:-master}"
+  fi
 
-  local sha
-  sha="$(git ls-remote "$REPO_URL" "refs/heads/$REPO_REF" 2>/dev/null | awk '{ print $1; exit }')"
+  sha="$(git ls-remote "$REPO_URL" "refs/tags/$ref^{}" "refs/tags/$ref" "refs/heads/$ref" 2>/dev/null |
+    awk '/\^\{\}$/ { peeled = $1 } !first { first = $1 } END { print peeled ? peeled : first }')"
   if [[ -z "$sha" ]]; then
-    echo "Error: could not resolve $REPO_REF from $REPO_URL. Set WT_REPO_RAW_BASE to install from a custom source." >&2
+    echo "Error: could not resolve $ref from $REPO_URL. Set WT_REPO_RAW_BASE to install from a custom source." >&2
     exit 1
   fi
   printf '%s\n' "$sha"

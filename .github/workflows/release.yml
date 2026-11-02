@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version part to bump (the first release is v1.0.0)
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    if: github.ref == 'refs/heads/master'
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Pick version
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          prev="$(git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
+          if [[ -z "$prev" ]]; then
+            next=1.0.0
+          else
+            IFS=. read -r major minor patch <<<"${prev#v}"
+            case "$BUMP" in
+              major) next="$((major + 1)).0.0" ;;
+              minor) next="$major.$((minor + 1)).0" ;;
+              *) next="$major.$minor.$((patch + 1))" ;;
+            esac
+          fi
+          echo "prev=$prev" >>"$GITHUB_OUTPUT"
+          echo "next=$next" >>"$GITHUB_OUTPUT"
+      - name: Tag a commit that stamps the version
+        env:
+          NEXT: ${{ steps.version.outputs.next }}
+        run: |
+          sed -i "s/^WT_VERSION=\"dev\"$/WT_VERSION=\"$NEXT\"/" bin/wt
+          grep -qx "WT_VERSION=\"$NEXT\"" bin/wt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898283+github-actions[bot]@users.noreply.github.com'
+          git commit -qam "chore(release): v$NEXT"
+          git tag -a "v$NEXT" -m "v$NEXT"
+          git push origin "v$NEXT"
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREV: ${{ steps.version.outputs.prev }}
+          NEXT: ${{ steps.version.outputs.next }}
+        run: |
+          {
+            echo '## Changes'
+            echo
+            git log --no-merges --format='- %s (%h)' "${PREV:+$PREV..}HEAD^"
+            echo
+            echo 'Update with `wt update`, or install with:'
+            echo
+            echo '```bash'
+            echo 'curl -fsSL https://raw.githubusercontent.com/tomergalatwix/wt/master/install.sh | bash'
+            echo '```'
+          } >notes.md
+          gh release create "v$NEXT" --title "v$NEXT" --notes-file notes.md --verify-tag
