@@ -84,3 +84,19 @@ assert_contains 'Compacted free pool: free-3 -> free-2' "$gap_setup_log"
 assert_not_contains 'Closing free slot gap:' "$gap_root/gap-alloc.log"
 assert_not_match '^Output:$' "$gap_root/gap-alloc.log"
 assert_not_match '^\(none\)$' "$gap_root/gap-alloc.log"
+
+# `list -v` stores git's untracked cache in each worktree's index, tied to its
+# path; after wt moves a worktree git must not warn that the cache is disabled.
+uc_root="$(new_test_root)"
+create_repo_fixture "$uc_root"
+(
+  cd "$REPO"
+  "$WT_BIN" grow --size 1 > /dev/null
+  git worktree add -q "$uc_root/repo-worktrees/feat" -b feat origin/master
+  "$WT_BIN" list -v > /dev/null
+  "$WT_BIN" free feat > "$uc_root/free.log" 2>&1
+  git -C "$uc_root/repo-worktrees/free-2" status --porcelain > "$uc_root/status.log" 2>&1
+  "$WT_BIN" alloc feature/uc > "$uc_root/alloc.log" 2>&1
+)
+assert_not_contains 'untracked cache' "$uc_root/status.log"
+assert_not_contains 'untracked cache' "$uc_root/alloc.log"

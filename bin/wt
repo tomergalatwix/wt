@@ -234,6 +234,14 @@ main_lefthook_bin() {
   printf '%s\n' "$candidate"
 }
 
+# `wt list -v` enables git's untracked cache, which is tied to the worktree's
+# path; drop it after a move so git doesn't warn that it is disabled.
+move_worktree() {
+  local repo="$1" from="$2" to="$3"
+  git_wt "$repo" -C "$repo" worktree move "$from" "$to" || return
+  git -C "$to" update-index --no-untracked-cache 2>/dev/null || true
+}
+
 git_wt() {
   local repo="$1"
   shift
@@ -890,7 +898,7 @@ compact_free_slots() {
       fi
       verbose_info "Closing free slot gap: $(basename "$current") -> $(basename "$target")"
       run_logged "Closing free slot gap..." \
-        git_wt "$repo" -C "$repo" worktree move "$current" "$target"
+        move_worktree "$repo" "$current" "$target"
       [[ -z "$first_from" ]] && first_from="$(basename "$current")"
       [[ -z "$first_to" ]] && first_to="$(basename "$target")"
       last_from="$(basename "$current")"
@@ -1750,7 +1758,7 @@ alloc_branch() {
   local target="$pool/$branch"
   [[ ! -e "$target" ]] || die "Target worktree path already exists: $target"
   mkdir -p "$(dirname "$target")"
-  run_logged "Creating worktree..." git_wt "$repo" -C "$repo" worktree move "$slot" "$target"
+  run_logged "Creating worktree..." move_worktree "$repo" "$slot" "$target"
 
   start_allocation_setup "$repo" "$pool" "$branch" "$base_ref" "$base_overridden" "$target" "$old_head" "$branch_exists"
   success "Worktree created: $branch"
@@ -1914,7 +1922,7 @@ cmd_realloc() {
   slot="$(next_free_slot_path "$pool")"
   info "Moving selected worktree to temporary free slot: $slot"
   run_logged "Moving selected worktree to temporary free slot..." \
-    git_wt "$repo" -C "$repo" worktree move "$target" "$slot"
+    move_worktree "$repo" "$target" "$slot"
 
   alloc_branch "$repo" "$pool" "$branch" "$base_ref" "$base_overridden" "$slot" 0
 }
@@ -1980,7 +1988,7 @@ cmd_free() {
   if [[ "$target" != "$free_path" ]]; then
     verbose_info "Moving worktree to free slot: $free_path"
     run_logged "Moving worktree to free slot..." \
-      git_wt "$repo" -C "$repo" worktree move "$target" "$free_path"
+      move_worktree "$repo" "$target" "$free_path"
   fi
 
   success "Freed to: $(basename "$free_path")"
