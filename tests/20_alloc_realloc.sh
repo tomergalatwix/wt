@@ -13,8 +13,16 @@ create_repo_fixture "$root"
 wait_for_setup "$REPO" "$root/repo-worktrees/feature/alloc" feature/alloc
 assert_not_contains '__WT_ALLOCATED__' "$root/alloc.log"
 assert_contains 'Worktree created: feature/alloc' "$root/alloc.log"
-assert_contains 'Setup continues in background.' "$root/alloc.log"
+assert_not_contains 'Setup continues in background.' "$root/alloc.log"
 assert_eq 'feature/alloc' "$(git -C "$root/repo-worktrees/feature/alloc" branch --show-current)"
+
+(
+  cd "$REPO"
+  "$WT_BIN" grow --size 1 > /dev/null
+  "$WT_BIN" alloc feature/verbose --verbose > "$root/verbose-alloc.log" 2>&1
+)
+wait_for_setup "$REPO" "$root/repo-worktrees/feature/verbose" feature/verbose
+assert_contains 'Setup continues in background.' "$root/verbose-alloc.log"
 
 if (cd "$REPO" && "$WT_BIN" create old-name > "$root/create.log" 2>&1); then
   fail 'wt create unexpectedly succeeded'
@@ -53,7 +61,7 @@ create_repo_fixture "$direct_root"
   "$WT_BIN" alloc feature/direct > "$direct_root/direct-alloc.log" 2>&1
 )
 wait_for_setup "$REPO" "$direct_root/repo-worktrees/feature/direct" feature/direct
-direct_setup_log="$(setup_log_from_alloc_output "$direct_root/direct-alloc.log")"
+direct_setup_log="$(setup_log_for "$direct_root/repo-worktrees/feature/direct")"
 test -d "$direct_root/repo-worktrees/feature/direct"
 test -d "$direct_root/repo-worktrees/free-1"
 test -d "$direct_root/repo-worktrees/free-2"
@@ -73,7 +81,7 @@ create_repo_fixture "$gap_root"
   "$WT_BIN" alloc --slot "$gap_root/repo-worktrees/free-2" feature/gap > "$gap_root/gap-alloc.log" 2>&1
 )
 wait_for_setup "$REPO" "$gap_root/repo-worktrees/feature/gap" feature/gap
-gap_setup_log="$(setup_log_from_alloc_output "$gap_root/gap-alloc.log")"
+gap_setup_log="$(setup_log_for "$gap_root/repo-worktrees/feature/gap")"
 test -d "$gap_root/repo-worktrees/feature/gap"
 test -d "$gap_root/repo-worktrees/free-1"
 test -d "$gap_root/repo-worktrees/free-2"

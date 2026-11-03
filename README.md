@@ -222,8 +222,8 @@ wt alloc my-feature --deps          # also install dependencies
 Allocation is asynchronous. The free slot is moved into place right away, so
 shell integration can switch to it immediately; fetching, checkout/rebase,
 dependency installation (with `--deps`) and pool compaction continue in the
-background. `wt alloc` prints the selected slot and the background log path;
-use the log for live progress or full failure output.
+background. With `--deps` or `--verbose`, `wt alloc` also prints the background
+log path; use the log for live progress or full failure output.
 
 While setup is running, `wt list -v` shows `setup` in the `STATUS` column, and
 `free`, `realloc` and `remove` are blocked until it finishes. A failed setup
@@ -444,7 +444,7 @@ wrapper, use `cd "$(wt go my-feature)"`.
 <summary><b>A worktree says <code>setup</code> and I can't free it.</b></summary>
 
 Allocation is still finishing in the background. `free`, `realloc` and
-`remove` wait for it. Follow the log path `wt alloc` printed to see progress.
+`remove` wait for it, and print the log path to follow its progress.
 An interrupted setup shows as `failed` and no longer blocks the slot.
 
 </details>
@@ -453,8 +453,8 @@ An interrupted setup shows as `failed` and no longer blocks the slot.
 <summary><b>Allocation failed. Where is the output?</b></summary>
 
 In the background log under `${XDG_STATE_HOME:-~/.local/state}/wt/setup/`; its
-path is printed by `wt alloc`. Re-run with `--verbose` to keep the full Git and
-package-manager output there.
+path is printed by `wt alloc --deps` or `--verbose`. Re-run with `--verbose` to
+keep the full Git and package-manager output there.
 
 </details>
 

@@ -126,6 +126,14 @@ wait_for_setup() {
   fail "timed out waiting for background setup of $name"
 }
 
+# Background setup log of a worktree, for allocs that don't print its path.
+setup_log_for() {
+  local path
+  path="$(cd "$1" && pwd -P)"
+  path="${path//%/%25}"
+  printf '%s/wt/setup/%s.log\n' "$XDG_STATE_HOME" "${path//\//%2F}"
+}
+
 setup_log_from_alloc_output() {
   local output="$1"
   awk '/^Setup continues in background\. Follow: / { print $NF; exit }' "$output"

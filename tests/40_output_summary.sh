@@ -95,8 +95,9 @@ create_repo_fixture_with_yarn "$nodeps_root"
   PATH="$nodeps_bin:$PATH" "$WT_BIN" alloc feature/no-deps > "$nodeps_root/alloc.log" 2>&1
 )
 wait_for_setup "$REPO" "$nodeps_root/repo-worktrees/feature/no-deps" feature/no-deps
-nodeps_log="$(setup_log_from_alloc_output "$nodeps_root/alloc.log")"
+nodeps_log="$(setup_log_for "$nodeps_root/repo-worktrees/feature/no-deps")"
 assert_contains 'Dependencies skipped: pass --deps to install them' "$nodeps_log"
+assert_not_contains 'Setup continues in background.' "$nodeps_root/alloc.log"
 assert_contains 'Allocated: feature/no-deps' "$nodeps_log"
 test ! -e "$nodeps_root/repo-worktrees/feature/no-deps/node_modules" || fail 'alloc without --deps installed dependencies'
 (
@@ -134,7 +135,7 @@ create_repo_fixture "$failure_root"
   "$WT_BIN" grow > "$failure_root/grow.log"
   PATH="$failure_bin:$PATH" "$WT_BIN" alloc feature/fetch-failure > "$failure_root/failure-alloc.log" 2>&1
 )
-failure_log="$(setup_log_from_alloc_output "$failure_root/failure-alloc.log")"
+failure_log="$(setup_log_for "$failure_root/repo-worktrees/feature/fetch-failure")"
 wait_for_setup "$REPO" "$failure_root/repo-worktrees/feature/fetch-failure" feature/fetch-failure
 assert_contains 'fetch failure detail 1' "$failure_log"
 assert_contains 'fetch failure detail 5' "$failure_log"
@@ -146,7 +147,7 @@ create_repo_fixture "$invalid_base_root"
   "$WT_BIN" grow > "$invalid_base_root/grow.log"
   "$WT_BIN" alloc --base missing-base feature/invalid-base > "$invalid_base_root/invalid-base-alloc.log" 2>&1
 )
-invalid_base_log="$(setup_log_from_alloc_output "$invalid_base_root/invalid-base-alloc.log")"
+invalid_base_log="$(setup_log_for "$invalid_base_root/repo-worktrees/feature/invalid-base")"
 for _ in {1..100}; do
   (cd "$REPO" && "$WT_BIN" list -v) > "$invalid_base_root/invalid-base-list.log"
   grep -Eq '^invalid-base[[:space:]]+failed' "$invalid_base_root/invalid-base-list.log" && break

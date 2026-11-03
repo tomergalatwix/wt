@@ -1687,6 +1687,7 @@ start_allocation_setup() {
   write_setup_state "$repo" "$target" running
   : > "$log"
   (
+    # shellcheck disable=SC2030 # verbose only inside the background setup
     WT_VERBOSE=1
     # sh's parent is this subshell; bash 3.2 has no $BASHPID.
     write_setup_state "$repo" "$target" running "$(sh -c 'echo $PPID')"
@@ -1762,7 +1763,10 @@ alloc_branch() {
 
   start_allocation_setup "$repo" "$pool" "$branch" "$base_ref" "$base_overridden" "$target" "$old_head" "$branch_exists"
   success "Worktree created: $branch"
-  info "Setup continues in background. Follow: $(setup_log_file "$repo" "$target")"
+  # shellcheck disable=SC2031 # the caller's verbosity, not the setup subshell's
+  if [[ "${WT_INSTALL_DEPS:-0}" == "1" || "$WT_VERBOSE" == "1" ]]; then
+    info "Setup continues in background. Follow: $(setup_log_file "$repo" "$target")"
+  fi
   if [[ "${WT_SHELL_INTEGRATION:-0}" == "1" ]]; then
     printf '__WT_ALLOCATED__\t%s\n' "$target"
   fi
